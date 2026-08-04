@@ -1,0 +1,135 @@
+# Trading Signal Bot — Strategy V1 (locked CDC decisions)
+# Signals only. No order execution permissions.
+
+meta:
+  version: "1.0.0"
+  hypothesis: true
+  signals_only: true
+  alert_categories: ["A+", "A"]
+  log_categories: ["A+", "A", "B"]
+  enable_choch_reversal_alerts: false
+  require_overlap_for_aplus: true
+  fvg_mitigation_mode: close_through  # variants: touch | fifty_percent_fill (separate runs)
+  poi_selection_mode: best_rr_then_recency  # variant: most_recent_valid (separate run)
+  correlated_pair_policy: keep_both_with_warning
+
+symbols:
+  FX: ["EURUSD", "GBPUSD", "USDJPY"]
+  XAU: ["XAUUSD"]
+  CRYPTO: ["BTCUSDT", "ETHUSDT"]
+
+timeframes:
+  context: 4H
+  structure: 1H
+  setup: 15M
+  confirm: 5M
+
+pivots:
+  N_4H: 2
+  N_1H: 2
+  N_15M: 2
+  N_5M: 2
+
+atr:
+  period: 14
+
+structure:
+  L_bos: 100
+  theta_body: 0.6
+  theta_disp: 1.0
+
+liquidity:
+  epsilon_eq_atr: 0.1   # hyperparam — calibrate TRAIN/VAL then freeze
+  equal_hl_tf: 1H
+  min_equal_separation_bars: 3
+  D_max_atr: 2.0
+  sweep_close_tolerance_atr: 0.0
+
+fvg:
+  theta_fvg_atr: 0.15
+  mitigation_mode: close_through
+
+order_block:
+  W_ob: 10
+  geometry: full_range  # variant: body_only (separate run)
+
+premium_discount:
+  discount_max: 0.45
+  premium_min: 0.55
+  deep_discount_max: 0.30
+  deep_premium_min: 0.70
+  ote_enabled: false
+  ote_low: 0.618
+  ote_high: 0.79
+  range_max_age_bars_1h: 100
+
+confirmation:
+  X_max_bars_15m_after_sweep: 6
+  theta_body_5m: 0.5
+  require_5m: true
+
+risk:
+  theta_sl_atr: 0.15
+  rr_min: 2.0
+  tp_model: liquidity  # variant: fixed_R (separate run)
+  fixed_r_targets: [2.0, 3.0]
+  partial_tp1_fraction: 0.5
+  max_hold_bars_5m: 48   # calibrate TRAIN/VAL; separate N per asset class if needed
+  max_hold_bars_5m_crypto: 96
+  intrabar_path: worst_case_sl_first
+
+costs:
+  fx_spread_atr_fraction: 0.02
+  fx_slippage_atr_fraction: 0.01
+  crypto_taker_fee_bps: 4.0
+  crypto_slippage_atr_fraction: 0.02
+
+volatility_filter:
+  W_vol: 100
+  V_min: 0.5
+  V_max: 2.5
+
+news:
+  window_minutes: 30
+  major_window_minutes: 60
+
+sessions:
+  # Allow windows expressed in exchange-local TZ; engine converts via IANA.
+  fx_default:
+    - {tz: "Europe/London", start: "07:00", end: "16:00"}
+    - {tz: "America/New_York", start: "08:00", end: "17:00"}
+  fx_exclude_asia_v1: true
+  crypto_allow_all_until_calibrated: true
+
+scoring:
+  S_B: 55
+  S_A: 70
+  S_Aplus: 85
+  # Weights are placeholders until TRAIN/VAL calibration. Do not treat as final.
+  weights:
+    f_overlap_fvg_ob: 0.25
+    f_deep_pd: 0.15
+    f_ote: 0.10
+    f_maj_liq: 0.20
+    f_mtf_fvg: 0.10
+    f_disp: 0.10
+    f_rr: 0.10
+
+splits:
+  # Chronological fractions; concrete dates set per dataset.
+  train_fraction: 0.60
+  val_fraction: 0.20
+  oos_fraction: 0.20
+
+walk_forward:
+  train_bars_5m: 50000
+  val_bars_5m: 15000
+  step_bars_5m: 15000
+
+selection_objective:
+  primary: expectancy_R
+  constraints:
+    min_profit_factor: 1.1
+    max_drawdown_R: 25.0
+    min_signals: 30
+  forbidden: optimize_win_rate_only
