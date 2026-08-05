@@ -50,6 +50,7 @@ MoonX.zip
 data/raw/
 data/cache/
 data/downloads/
+data/snapshots/
 *.parquet
 *.h5
 *.sqlite
