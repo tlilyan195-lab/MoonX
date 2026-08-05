@@ -98,7 +98,10 @@ def _confirm_5m(
     theta_body: float,
     atr_period: int,
 ) -> bool:
-    """Require BOS/CHoCH-like close break on 5M with body filter on confirm candle."""
+    """
+    BOS/CHoCH on 5M with body/displacement measured on the *event candle*
+    that produced the break — not on a later unrelated bar.
+    """
     st = compute_structure(
         df_5m.iloc[: asof_5m + 1],
         n_pivot=n_pivot,
@@ -110,21 +113,36 @@ def _confirm_5m(
     if not st.events:
         return False
     last = st.events[-1]
-    if last.index != asof_5m:
-        # allow confirm event within last 3 bars of asof
-        if asof_5m - last.index > 2:
-            return False
-    if direction == "LONG" and last.event_type.value.endswith("BULL"):
-        row = df_5m.iloc[asof_5m]
-        rng = float(row["high"] - row["low"])
-        body = abs(float(row["close"] - row["open"]))
-        return rng > 0 and (body / rng) >= theta_body
-    if direction == "SHORT" and last.event_type.value.endswith("BEAR"):
-        row = df_5m.iloc[asof_5m]
-        rng = float(row["high"] - row["low"])
-        body = abs(float(row["close"] - row["open"]))
-        return rng > 0 and (body / rng) >= theta_body
-    return False
+    # Event must be recent enough relative to evaluation bar
+    if asof_5m - last.index > 2:
+        return False
+    if direction == "LONG" and not last.event_type.value.endswith("BULL"):
+        return False
+    if direction == "SHORT" and not last.event_type.value.endswith("BEAR"):
+        return False
+    # P1: body ratio on the BOS/CHoCH candle itself
+    row = df_5m.iloc[last.index]
+    rng = float(row["high"] - row["low"])
+    body = abs(float(row["close"] - row["open"]))
+    return rng > 0 and (body / rng) >= theta_body
+
+
+def _poi_overlap_score(poi: POI, others: list[POI], theta: float) -> float:
+    """Max overlap of `poi` with opposite-type POIs in `others` (0 or 1 if >= theta)."""
+    best = 0.0
+    for other in others:
+        if other.poi_id == poi.poi_id:
+            continue
+        if poi.poi_type == other.poi_type:
+            continue
+        # Only FVG↔OB confluence counts
+        types = {poi.poi_type, other.poi_type}
+        if types != {"FVG", "OB"}:
+            continue
+        best = max(best, poi.overlaps(other))
+    if best >= theta:
+        return 1.0
+    return best
 
 
 def _select_poi(
@@ -139,11 +157,14 @@ def _select_poi(
     cfg: StrategyConfig,
 ) -> tuple[POI | None, Any]:
     """
-    Validated rule: best RR then recency; variant most_recent_valid separate.
+    P1 tie-break (deterministic):
+      best RR → recency → FVG+OB overlap → OB → FVG
+    Variant: most_recent_valid (separate run).
     """
     risk_cfg = cfg.get("risk", default={}) or {}
     costs_cfg = cfg.get("costs", default={}) or {}
-    scored: list[tuple[float, pd.Timestamp, POI, Any]] = []
+    overlap_theta = float(cfg.get("scoring", "overlap_theta", default=0.25))
+    scored: list[tuple[float, float, float, int, POI, Any]] = []
     for poi in candidates:
         plan = make_risk_plan(
             direction,
@@ -158,25 +179,33 @@ def _select_poi(
         )
         if plan is None:
             continue
-        scored.append((plan.rr1, poi.created_ts, poi, plan))
+        ov = _poi_overlap_score(poi, candidates, overlap_theta)
+        # type_rank: OB=1, FVG=0 for ascending sort we invert later
+        type_rank = 1 if poi.poi_type == "OB" else 0
+        scored.append(
+            (
+                plan.rr1,
+                poi.created_ts.timestamp(),
+                ov,
+                type_rank,
+                poi,
+                plan,
+            )
+        )
 
     if not scored:
         return None, None
 
     if mode == "most_recent_valid":
         scored.sort(key=lambda x: x[1], reverse=True)
-        return scored[0][2], scored[0][3]
+        return scored[0][4], scored[0][5]
 
-    # best_rr_then_recency
-    scored.sort(key=lambda x: (x[0], x[1].timestamp()), reverse=True)
-    # tie-break already includes recency via secondary key; refine equal RR:
-    best_rr = scored[0][0]
-    top = [s for s in scored if abs(s[0] - best_rr) < 1e-12]
-    # priority overlap handled outside; among top RR prefer most recent
-    top.sort(key=lambda x: x[1], reverse=True)
-    # then OB vs FVG priority if still needed — prefer ones that are OB if equal time
-    top.sort(key=lambda x: (x[1], 1 if x[2].poi_type == "OB" else 0), reverse=True)
-    return top[0][2], top[0][3]
+    # best RR → recency → overlap → OB → FVG
+    scored.sort(
+        key=lambda x: (x[0], x[1], x[2], x[3]),
+        reverse=True,
+    )
+    return scored[0][4], scored[0][5]
 
 
 def evaluate(
@@ -378,20 +407,9 @@ def evaluate(
     if selected is None or plan is None:
         return _no_trade(symbol, ts, "no_liquidity_tp_or_rr", ch)  # E2
 
-    # Features / score
-    overlap = 0.0
-    has_fvg = any(p.poi_type == "FVG" for p in valid_pois)
-    has_ob = any(p.poi_type == "OB" for p in valid_pois)
-    if has_fvg and has_ob:
-        best_ov = 0.0
-        for a in valid_pois:
-            if a.poi_type != "FVG":
-                continue
-            for b in valid_pois:
-                if b.poi_type != "OB":
-                    continue
-                best_ov = max(best_ov, a.overlaps(b))
-        overlap = 1.0 if best_ov >= float(cfg.get("scoring", "overlap_theta", default=0.25)) else best_ov
+    # P1 A+: overlap must involve the *selected* POI, not unrelated POI pairs
+    overlap_theta = float(cfg.get("scoring", "overlap_theta", default=0.25))
+    selected_overlap = _poi_overlap_score(selected, valid_pois, overlap_theta)
 
     deep = 0.0
     if pd_state.pos is not None:
@@ -412,11 +430,11 @@ def evaluate(
             ote_flag = 1.0 if in_ote(pd_state.pos) else 0.0
 
     features = {
-        "f_overlap_fvg_ob": float(overlap >= 0.25),
+        "f_overlap_fvg_ob": float(selected_overlap >= overlap_theta),
         "f_deep_pd": deep,
         "f_ote": ote_flag,
         "f_maj_liq": 1.0 if sweep.level.major else 0.0,
-        "f_mtf_fvg": 0.0,  # placeholder until 1H FVG confluence wired
+        "f_mtf_fvg": 0.0,
         "f_disp": 1.0 if any(e.displacement_ok for e in st15.events[-3:]) else 0.0,
         "f_rr": min(plan.rr1 / 3.0, 1.0),
     }
@@ -487,5 +505,7 @@ def evaluate(
             "cost_applied": plan.cost_applied,
             "tp1_level_id": plan.tp1_level_id,
             "tp2_level_id": plan.tp2_level_id,
+            "selected_poi_overlap": selected_overlap,
+            "confirm_5m_event_index": None,
         },
     )

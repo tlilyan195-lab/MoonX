@@ -19,16 +19,16 @@ Signals-only. No BUY/SELL/ORDER/TRANSFER/WITHDRAWAL permissions.
 | Alerts | A+ and A only; B log-only |
 | D1/D2 | Providers open — interfaces only until quality comparison |
 
-## Anti-overfitting
+## Anti-overfitting / OOS isolation (P0)
 
 1. Chronological TRAIN / VAL / OOS
-2. Select params on TRAIN/VAL only
-3. Freeze config hash before OOS
-4. Never retune after OOS
+2. `run_calibration()` uses TRAIN+VAL only and writes locked config + hash
+3. `run_oos_eval()` is a separate step after lock — never used to retune
+4. Trade outcomes are bounded to the active split end (`max_index`) — no TRAIN→VAL/OOS leakage
 5. Variant experiments = separate runs
 6. Primary selection: expectancy_R under PF/DD/min_signals constraints — not win rate alone
 
 ## ÉTAPE 4 scope
 
-Backtest engine + strategy evaluate() + metrics + splits + synthetic data path.
-Paper/Telegram/live providers = later steps.
+Backtest engine + strategy evaluate() + metrics + splits + walk-forward + regimes + synthetic/golden fixtures.
+Paper/Telegram/live providers = later steps. No real market data in ÉTAPE 4.

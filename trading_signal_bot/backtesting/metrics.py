@@ -94,19 +94,29 @@ def simulate_trade_path(
     partial_tp1_fraction: float,
     max_hold_bars: int,
     intrabar_path: str = "worst_case_sl_first",
+    max_index: int | None = None,
 ) -> tuple[Outcome, int, float, float, float, pd.Timestamp | None]:
     """
     Walk forward from entry_idx+1.
-    If SL and TP both touched in same bar: worst_case => SL first.
-    PnL model: partial_tp1_fraction at TP1, remainder at TP2 (or SL after TP1).
+
+    P0 anti-leakage: if max_index is set (inclusive end of active split),
+    simulation never reads bars beyond that index — even if max_hold would allow it.
     """
     if risk <= 0:
         return "unknown", 0, 0.0, 0.0, 0.0, None
 
+    hard_end = len(df_5m) - 1
+    if max_index is not None:
+        hard_end = min(hard_end, int(max_index))
+    end = min(hard_end, entry_idx + max_hold_bars)
+    if end <= entry_idx:
+        # No future bars inside the split bound → timeout at entry with flat PnL
+        ts = df_5m.index[entry_idx] if 0 <= entry_idx < len(df_5m) else None
+        return "timeout", 0, 0.0, 0.0, 0.0, ts
+
     mfe = 0.0
     mae = 0.0
     tp1_hit = False
-    end = min(len(df_5m) - 1, entry_idx + max_hold_bars)
     for i in range(entry_idx + 1, end + 1):
         row = df_5m.iloc[i]
         high = float(row["high"])
@@ -131,20 +141,22 @@ def simulate_trade_path(
             if hit_sl and hit_tp1:
                 if intrabar_path == "worst_case_sl_first":
                     return "sl", bars, -1.0, mfe, mae, ts
-                # optimistic variant (separate runs only)
                 tp1_hit = True
             elif hit_sl:
                 return "sl", bars, -1.0, mfe, mae, ts
             elif hit_tp1:
                 tp1_hit = True
                 if hit_tp2:
-                    pnl = partial_tp1_fraction * ((tp1 - entry) / risk if direction == "LONG" else (entry - tp1) / risk)
+                    pnl = partial_tp1_fraction * (
+                        (tp1 - entry) / risk if direction == "LONG" else (entry - tp1) / risk
+                    )
                     rem = 1.0 - partial_tp1_fraction
-                    tp2_r = ((tp2 - entry) / risk if direction == "LONG" else (entry - tp2) / risk)  # type: ignore[operator]
+                    tp2_r = (
+                        (tp2 - entry) / risk if direction == "LONG" else (entry - tp2) / risk
+                    )  # type: ignore[operator]
                     return "tp2", bars, pnl + rem * tp2_r, mfe, mae, ts
             continue
 
-        # After TP1: remainder managed to TP2 or SL
         if hit_sl and hit_tp2:
             if intrabar_path == "worst_case_sl_first":
                 r1 = (tp1 - entry) / risk if direction == "LONG" else (entry - tp1) / risk
@@ -160,12 +172,10 @@ def simulate_trade_path(
             pnl = partial_tp1_fraction * r1 + (1.0 - partial_tp1_fraction) * r2
             return "tp2", bars, pnl, mfe, mae, ts
 
-    # timeout
     bars = end - entry_idx
     ts = df_5m.index[end] if end > entry_idx else None
     if tp1_hit:
         r1 = (tp1 - entry) / risk if direction == "LONG" else (entry - tp1) / risk
-        # remainder marked to market at last close
         last = float(df_5m.iloc[end]["close"])
         rem_r = (last - entry) / risk if direction == "LONG" else (entry - last) / risk
         pnl = partial_tp1_fraction * r1 + (1.0 - partial_tp1_fraction) * rem_r

@@ -32,11 +32,19 @@ def test_backtest_runs_and_returns_metrics():
 
 def test_train_val_oos_separate():
     cfg = StrategyConfig.from_yaml()
-    results = run_split_backtests(_bundle(n=3000), cfg)
-    assert set(results) == {"TRAIN", "VAL", "OOS"}
-    # Ensure meta carries anti-overfit diagnostics
+    # Calibration path: TRAIN/VAL only
+    results = run_split_backtests(_bundle(n=3000), cfg, include_oos=False)
+    assert set(results) == {"TRAIN", "VAL"}
     assert "overfitting_flags" in results["VAL"].meta
     assert "val_monte_carlo" in results["VAL"].meta
+    assert results["VAL"].meta["includes_oos_metrics"] is False
+
+    # Explicit OOS after lock
+    from trading_signal_bot.backtesting import run_calibration, run_oos_eval
+
+    cal = run_calibration(_bundle(n=2000), cfg, locked_config_path=None)
+    oos = run_oos_eval(_bundle(n=2000), cal.locked_config, cal.splits)
+    assert oos.split_name == "OOS"
 
 
 def test_variant_runs_are_separate_hashes():

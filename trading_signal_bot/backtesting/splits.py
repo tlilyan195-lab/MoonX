@@ -1,4 +1,4 @@
-"""Chronological splits, walk-forward, and anti-overfit helpers."""
+"""Chronological splits, walk-forward, Monte Carlo, anti-overfit helpers."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ from typing import Iterator
 
 import numpy as np
 import pandas as pd
+
+from trading_signal_bot.backtesting.metrics import _streaks, max_drawdown_R
 
 
 @dataclass(frozen=True)
@@ -71,22 +73,56 @@ def monte_carlo_expectancy(
     n_sims: int = 1000,
     seed: int = 42,
 ) -> dict[str, float]:
-    """Bootstrap trade returns (no peeking at unused params)."""
+    """
+    Bootstrap trade returns.
+    Reports expectancy, max drawdown, and max losing-streak distributions.
+    """
+    empty = {
+        "mean": 0.0,
+        "p05": 0.0,
+        "p50": 0.0,
+        "p95": 0.0,
+        "p_exp_le_0": 1.0,
+        "max_dd_mean": 0.0,
+        "max_dd_p05": 0.0,
+        "max_dd_p50": 0.0,
+        "max_dd_p95": 0.0,
+        "max_losing_streak_mean": 0.0,
+        "max_losing_streak_p05": 0.0,
+        "max_losing_streak_p50": 0.0,
+        "max_losing_streak_p95": 0.0,
+    }
     if not pnls:
-        return {"mean": 0.0, "p05": 0.0, "p50": 0.0, "p95": 0.0, "p_exp_le_0": 1.0}
+        return empty
     rng = np.random.default_rng(seed)
     arr = np.asarray(pnls, dtype=float)
-    means = []
+    means: list[float] = []
+    dds: list[float] = []
+    lose_streaks: list[float] = []
     for _ in range(n_sims):
         sample = rng.choice(arr, size=len(arr), replace=True)
+        sample_list = sample.tolist()
         means.append(float(sample.mean()))
+        dds.append(max_drawdown_R(sample_list))
+        _, max_l = _streaks(sample_list)
+        lose_streaks.append(float(max_l))
     means_a = np.asarray(means)
+    dds_a = np.asarray(dds)
+    ls_a = np.asarray(lose_streaks)
     return {
         "mean": float(means_a.mean()),
         "p05": float(np.percentile(means_a, 5)),
         "p50": float(np.percentile(means_a, 50)),
         "p95": float(np.percentile(means_a, 95)),
         "p_exp_le_0": float(np.mean(means_a <= 0)),
+        "max_dd_mean": float(dds_a.mean()),
+        "max_dd_p05": float(np.percentile(dds_a, 5)),
+        "max_dd_p50": float(np.percentile(dds_a, 50)),
+        "max_dd_p95": float(np.percentile(dds_a, 95)),
+        "max_losing_streak_mean": float(ls_a.mean()),
+        "max_losing_streak_p05": float(np.percentile(ls_a, 5)),
+        "max_losing_streak_p50": float(np.percentile(ls_a, 50)),
+        "max_losing_streak_p95": float(np.percentile(ls_a, 95)),
     }
 
 

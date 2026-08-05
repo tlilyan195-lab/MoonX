@@ -54,24 +54,33 @@ def test_atr_positive():
 
 def test_bos_requires_close_not_wick_only():
     idx = pd.date_range("2024-01-01", periods=30, freq="1h", tz="UTC")
-    # Build clear swings then wick-only break
-    closes = [1.0] * 30
-    highs = [1.05] * 30
-    lows = [0.95] * 30
-    opens = [1.0] * 30
-    # Create a swing high around bar 10
-    for i in range(30):
-        highs[i] = 1.0 + 0.01 * i
-        lows[i] = 0.9 + 0.01 * i
-        closes[i] = 0.95 + 0.01 * i
-        opens[i] = closes[i]
+    highs = np.array(
+        [1.0, 1.05, 1.10, 1.15, 1.10, 1.05, 1.00, 1.05, 1.10, 1.12, 1.20, 1.15, 1.10, 1.08, 1.06]
+        + [1.07] * 15,
+        dtype=float,
+    )
+    lows = highs - 0.04
+    closes = highs - 0.01
+    opens = lows + 0.01
     df = pd.DataFrame(
         {"open": opens, "high": highs, "low": lows, "close": closes, "volume": 1},
         index=idx,
     )
-    # Wick above last swing but close below — craft last bars
-    st = compute_structure(df, n_pivot=2, asof_index=len(df) - 1)
-    assert st.bias in ("BULL", "BEAR", "NEUTRAL")
+    swing_high = 1.20
+    # Wick-only beyond swing high
+    df.iloc[20, df.columns.get_loc("high")] = swing_high + 0.05
+    df.iloc[20, df.columns.get_loc("close")] = swing_high - 0.01
+    df.iloc[20, df.columns.get_loc("open")] = swing_high - 0.02
+    df.iloc[20, df.columns.get_loc("low")] = swing_high - 0.03
+    st = compute_structure(df, n_pivot=2, asof_index=20)
+    assert [e for e in st.events if e.index == 20] == []
+
+    df.iloc[21, df.columns.get_loc("close")] = swing_high + 0.02
+    df.iloc[21, df.columns.get_loc("high")] = swing_high + 0.03
+    df.iloc[21, df.columns.get_loc("open")] = swing_high - 0.01
+    df.iloc[21, df.columns.get_loc("low")] = swing_high - 0.02
+    st2 = compute_structure(df, n_pivot=2, asof_index=21)
+    assert any(e.index == 21 and e.event_type.value.endswith("BULL") for e in st2.events)
 
 
 def test_fvg_detection_and_close_through_mitigation():

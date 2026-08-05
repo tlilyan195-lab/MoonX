@@ -38,6 +38,14 @@ logs/
 *.log
 **/logs/
 
+# Generated locked configs (written by calibrate; do not commit secrets/trials)
+config/strategy_v1_locked.yaml
+config/*_locked.yaml
+
+# Local zip packaging
+MoonX.zip
+
+
 # Data caches / local dumps
 data/raw/
 data/cache/
