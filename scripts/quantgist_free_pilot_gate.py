@@ -106,9 +106,52 @@ def main() -> int:
     out = ROOT / "docs" / "ETAPE_5_1B_QUANTGIST_FREE_PILOT_SAMPLE.json"
     # Never write the API key
     out.write_text(json.dumps(samples, indent=2, default=str)[:200000], encoding="utf-8")
-    print("QUANTGIST_API_KEY present — wrote sample to", out)
-    print("Inspect sample; do not treat as 3y confirmation.")
+
+    statuses = {
+        name: block.get("status")
+        for name, block in samples.items()
+        if isinstance(block, dict)
+    }
+    auth_fail = [n for n, s in statuses.items() if s in (401, 403)]
+    ok_data = [
+        n
+        for n, block in samples.items()
+        if isinstance(block, dict)
+        and block.get("status") == 200
+        and _body_has_events(block.get("body"))
+    ]
+    print(f"Wrote {out}")
+    print(f"http_statuses = {statuses}")
+    if auth_fail:
+        print("QUANTGIST_FREE_PILOT = FAIL")
+        print(
+            f"REASON = auth failed on {auth_fail} "
+            "(key missing/revoked/invalid — regenerate at dashboard/keys)."
+        )
+        print("Do NOT treat env var presence as API success.")
+        return 2
+    if not ok_data:
+        print("QUANTGIST_FREE_PILOT = FAIL")
+        print("REASON = no section returned HTTP 200 with events.")
+        return 2
+    print("QUANTGIST_FREE_PILOT = PASS_SAMPLE_WRITTEN")
+    print("Next: python scripts/analyze_quantgist_free_pilot.py")
+    print("Inspect sample; do not treat Free as 3y confirmation.")
     return 0
+
+
+def _body_has_events(body) -> bool:  # noqa: ANN001
+    if body is None:
+        return False
+    if isinstance(body, list):
+        return len(body) > 0
+    if isinstance(body, dict):
+        if body.get("error"):
+            return False
+        for key in ("data", "items", "events", "results"):
+            if isinstance(body.get(key), list) and body[key]:
+                return True
+    return False
 
 
 def _safe_json(r: requests.Response):
