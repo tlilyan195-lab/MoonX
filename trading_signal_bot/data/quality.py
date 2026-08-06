@@ -11,6 +11,7 @@ import pandas as pd
 from trading_signal_bot.data import OHLCVFrame, Timeframe, validate_ohlcv
 from trading_signal_bot.data.providers import aggregate_ohlcv
 from trading_signal_bot.data.sessions import fx_trading_day_id, previous_fx_trading_day_bounds
+from trading_signal_bot.data.trading_calendars import calendar_quality_stats
 
 
 TF_EXPECTED_DELTA = {
@@ -41,6 +42,11 @@ class SymbolQualityReport:
     rejected: bool = False
     reject_reason: str = ""
     extras: dict[str, Any] = field(default_factory=dict)
+    expected_trading_bars: int = 0
+    scheduled_closed_bars: int = 0
+    unexpected_missing_bars: int = 0
+    unexpected_missing_pct: float = 0.0
+    unexpected_gap_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +68,12 @@ class SymbolQualityReport:
             "rejected": self.rejected,
             "reject_reason": self.reject_reason,
             "extras": self.extras,
+            "expected_trading_bars": self.expected_trading_bars,
+            "observed_bars": self.n_bars,
+            "scheduled_closed_bars": self.scheduled_closed_bars,
+            "unexpected_missing_bars": self.unexpected_missing_bars,
+            "unexpected_missing_pct": self.unexpected_missing_pct,
+            "unexpected_gap_count": self.unexpected_gap_count,
         }
 
 
@@ -78,51 +90,45 @@ def gap_analysis(
     df: pd.DataFrame,
     timeframe: Timeframe,
     asset_class: str,
-) -> tuple[int, list[dict[str, Any]], float]:
+    period_start: pd.Timestamp | None = None,
+    period_end: pd.Timestamp | None = None,
+) -> tuple[int, list[dict[str, Any]], float, dict[str, Any]]:
     """
-    Estimate missing % vs expected regular grid.
-    FX: skip weekend gaps (Sat/Sun) as expected.
-    Crypto: expect near-continuous grid.
-    """
-    if len(df) < 2:
-        return 0, [], 100.0
-    delta = TF_EXPECTED_DELTA[timeframe]
-    diffs = df.index.to_series().diff().iloc[1:]
-    gaps = []
-    n_gap = 0
-    for ts, d in diffs.items():
-        if pd.isna(d):
-            continue
-        if d <= delta * 1.01:
-            continue
-        # FX weekend tolerance: gaps spanning Sat/Sun
-        if asset_class in ("FX", "XAU"):
-            prev = ts - d
-            # if gap mostly weekend, downgrade
-            span_hours = d.total_seconds() / 3600.0
-            if span_hours <= 50 and prev.dayofweek >= 4:  # Fri onwards
-                continue
-        missing_bars = int(round(d / delta)) - 1
-        if missing_bars <= 0:
-            continue
-        n_gap += 1
-        gaps.append(
-            {
-                "after": str(ts - d),
-                "at": str(ts),
-                "gap": str(d),
-                "approx_missing_bars": missing_bars,
-            }
-        )
+    Calendar-aware gap analysis (no interpolation).
 
-    # Expected bars in calendar span
-    span = df.index[-1] - df.index[0]
-    expected = max(int(span / delta), 1)
-    if asset_class in ("FX", "XAU"):
-        # rough: ~5/7 of time market open
-        expected = int(expected * 5 / 7)
-    missing_pct = max(0.0, 100.0 * (1.0 - len(df) / max(expected, 1)))
-    return n_gap, gaps, float(missing_pct)
+    missing_pct / gap counts use only bars expected while the instrument is
+    tradable (Dukascopy FX/XAU calendars; crypto 24/7). Scheduled weekend,
+    daily-break, and holiday closures are excluded from the denominator.
+    """
+    if df.empty:
+        return 0, [], 100.0, {}
+    if period_start is None:
+        period_start = df.index[0]
+    if period_end is None:
+        period_end = df.index[-1]
+    stats = calendar_quality_stats(
+        df,
+        asset_class=asset_class,
+        timeframe=timeframe,
+        period_start=period_start,
+        period_end=period_end,
+    )
+    extras = {
+        "expected_trading_bars": stats.expected_trading_bars,
+        "observed_bars": stats.observed_bars,
+        "observed_in_expected": stats.observed_in_expected,
+        "scheduled_closed_bars": stats.scheduled_closed_bars,
+        "unexpected_missing_bars": stats.unexpected_missing_bars,
+        "unexpected_missing_pct": stats.unexpected_missing_pct,
+        "unexpected_gap_count": stats.unexpected_gap_count,
+        "closed_reason_counts": stats.closed_reason_counts,
+    }
+    return (
+        stats.unexpected_gap_count,
+        stats.unexpected_gap_samples,
+        float(stats.unexpected_missing_pct),
+        extras,
+    )
 
 
 def check_utc_close_index(df: pd.DataFrame, timeframe: Timeframe) -> bool:
@@ -220,7 +226,13 @@ def evaluate_symbol_frame(
 ) -> SymbolQualityReport:
     df = frame.df
     n_anom, anom_samples = count_ohlc_anomalies(df)
-    n_gaps, gap_details, missing_pct = gap_analysis(df, frame.timeframe, asset_class)
+    n_gaps, gap_details, missing_pct, cal_extras = gap_analysis(
+        df,
+        frame.timeframe,
+        asset_class,
+        period_start=period_start,
+        period_end=period_end,
+    )
     utc_ok = check_utc_close_index(df, frame.timeframe)
     basic = validate_ohlcv(df)
     dst = {}
@@ -234,6 +246,7 @@ def evaluate_symbol_frame(
             native = (native_higher or {}).get(tf)
             agg_cmp[tf] = compare_native_vs_aggregated(frame_5m, native, tf)  # type: ignore[arg-type]
 
+    unexpected_pct = float(cal_extras.get("unexpected_missing_pct", missing_pct))
     rejected = False
     reason = ""
     if df.empty:
@@ -246,8 +259,8 @@ def evaluate_symbol_frame(
         # GAP alone is reported; severe invalid rejects
         if basic.status.value == "INVALID_BAR":
             rejected, reason = True, basic.reason
-    elif asset_class == "XAU" and missing_pct > reject_missing_pct_above:
-        rejected, reason = True, f"xau_missing_pct={missing_pct:.1f}>threshold"
+    elif asset_class == "XAU" and unexpected_pct > reject_missing_pct_above:
+        rejected, reason = True, f"xau_unexpected_missing_pct={unexpected_pct:.1f}>threshold"
 
     return SymbolQualityReport(
         symbol=frame.symbol,
@@ -267,5 +280,14 @@ def evaluate_symbol_frame(
         aggregation_compare=agg_cmp,
         rejected=rejected,
         reject_reason=reason,
-        extras={"basic_status": basic.status.value, "basic_reason": basic.reason},
+        extras={
+            "basic_status": basic.status.value,
+            "basic_reason": basic.reason,
+            **cal_extras,
+        },
+        expected_trading_bars=int(cal_extras.get("expected_trading_bars", 0)),
+        scheduled_closed_bars=int(cal_extras.get("scheduled_closed_bars", 0)),
+        unexpected_missing_bars=int(cal_extras.get("unexpected_missing_bars", 0)),
+        unexpected_missing_pct=unexpected_pct,
+        unexpected_gap_count=int(cal_extras.get("unexpected_gap_count", n_gaps)),
     )

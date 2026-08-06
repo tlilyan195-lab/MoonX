@@ -77,6 +77,7 @@ def test_gap_analysis_crypto_detects_hole():
         {"open": 1, "high": 1, "low": 1, "close": 1, "volume": 1},
         index=pd.DatetimeIndex(idx),
     )
-    n_gaps, details, missing_pct = gap_analysis(df, "5M", "CRYPTO")
+    n_gaps, details, missing_pct, extras = gap_analysis(df, "5M", "CRYPTO")
     assert n_gaps >= 1
     assert missing_pct > 0
+    assert extras["unexpected_missing_bars"] >= 1
