@@ -125,5 +125,7 @@
     "why": "Free pilot must not unlock payment. 3y history not API-confirmed on Free. Recommend payment only after Starter (or \u2264$25 plan) API proves \u22653y depth plus high-impact EUR/USD/GBP/JPY and look-ahead-safe reconstruction. High-impact coverage incomplete on this sample. Look-ahead safety not confirmed."
   },
   "n_events_total": 0,
-  "currencies_needed_subset_seen": false
+  "currencies_needed_subset_seen": false,
+  "PROVIDER_STATUS": "BLOCKED_AUTH",
+  "note": "Do not pay QuantGist; do not regenerate keys; re-evaluate later separately. Continue with FMP Free pilot."
 }

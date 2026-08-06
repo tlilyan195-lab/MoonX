@@ -1,0 +1,27 @@
+{
+  "generated_at_utc": "2026-08-06T09:48:58Z",
+  "provider": "fmp",
+  "product": "stable/economic-calendar",
+  "key_present": false,
+  "key_fingerprint": null,
+  "windows": [],
+  "verdict": {
+    "FMP_FREE_PILOT": "FAIL_NO_KEY",
+    "3Y_HISTORY": "NOT_TESTED",
+    "LOOKAHEAD_SAFETY": "DOC_PARTIAL",
+    "PAYMENT_RECOMMENDATION": "NO",
+    "NEXT": "Add FMP_API_KEY to .env then re-run gate"
+  },
+  "constraints": {
+    "no_strategy_rule_changes": true,
+    "no_oos": true,
+    "no_real_orders": true,
+    "no_definitive_connector": true,
+    "quantgist_status": "BLOCKED_AUTH"
+  },
+  "docs_refs": [
+    "https://site.financialmodelingprep.com/developer/docs/stable/economics-calendar",
+    "https://financialmodelingprep.com/stable/economic-calendar",
+    "https://site.financialmodelingprep.com/developer/docs/pricing"
+  ]
+}

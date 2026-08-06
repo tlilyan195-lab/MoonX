@@ -1,0 +1,222 @@
+{
+  "generated_at_utc": "2026-08-06T09:48:58Z",
+  "etape": "5.1_NEWS_ALT",
+  "constraints": {
+    "no_quantgist_payment": true,
+    "no_key_regeneration_for_now": true,
+    "quantgist_status": "BLOCKED_AUTH",
+    "no_strategy_rule_changes": true,
+    "no_oos": true,
+    "no_real_orders": true,
+    "preserve_prior_diagnostics": true
+  },
+  "providers": [
+    {
+      "provider_id": "quantgist",
+      "product": "Economic Calendar API (Free / Starter)",
+      "cost_pilot": "$0 Free (auth currently broken) | Starter $19/mo official",
+      "cost_if_paid": "$19/mo Starter (JSON-LD conflict $29 noted earlier)",
+      "historical_calendar": "YES (doc) — /v1/calendar/range + /v1/events",
+      "timestamps": "YES — time_utc + date + time_et",
+      "currency_country": "YES — currency + country",
+      "impact": "YES — impact High/Medium/Low + importance 1-3",
+      "event_name_id": "YES — event + event_id",
+      "lookahead_avoidance": "PARTIAL — no PIT vintage; use scheduled time only",
+      "train_val_depth": "DOC_CLAIM 10y Free / 20y Starter — NOT empirically confirmed",
+      "api_stability": "GOOD docs; live Free = BLOCKED_AUTH (401 revoked)",
+      "fit_for_fx_xau_news_gate": "HIGH if auth works",
+      "status": "BLOCKED_AUTH",
+      "notes": "Do not pay now. Do not regenerate keys now. Re-evaluate later separately."
+    },
+    {
+      "provider_id": "trading_economics",
+      "product": "Calendar API (guest + Standard)",
+      "cost_pilot": "$0 guest → HTTP 410 Gone",
+      "cost_if_paid": "~USD 149/mo Standard (site)",
+      "historical_calendar": "YES if paid",
+      "timestamps": "YES DateTime",
+      "currency_country": "YES Currency + Country",
+      "impact": "YES Importance 1-3",
+      "event_name_id": "YES Event + CalendarId",
+      "lookahead_avoidance": "PARTIAL — no PIT vintage",
+      "train_val_depth": "Likely OK if paid — not piloted paid",
+      "api_stability": "GOOD docs; guest dead",
+      "fit_for_fx_xau_news_gate": "HIGH if paid",
+      "status": "REJECT_COST_V1",
+      "notes": "Too expensive for V1 pilot. Keep as optional later."
+    },
+    {
+      "provider_id": "finnhub",
+      "product": "Economic Calendar (Free)",
+      "cost_pilot": "$0 Free",
+      "cost_if_paid": "N/A for this endpoint on Free",
+      "historical_calendar": "NO for 3y — Free not entitled (ÉTAPE 5.1A)",
+      "timestamps": "YES when entitled",
+      "currency_country": "country primarily",
+      "impact": "YES impact",
+      "event_name_id": "event name; id weak",
+      "lookahead_avoidance": "PARTIAL",
+      "train_val_depth": "FAIL Free entitlement",
+      "api_stability": "GOOD",
+      "fit_for_fx_xau_news_gate": "LOW on Free",
+      "status": "REJECT_FREE_ENTITLEMENT",
+      "notes": "Already rejected in 5.1A for historical depth on Free."
+    },
+    {
+      "provider_id": "fmp",
+      "product": "Economic Calendar API (Free tier / Starter)",
+      "cost_pilot": "$0 Basic Free (250 req/day) — needs FMP_API_KEY",
+      "cost_if_paid": "Starter ~$22/mo billed annually if Free insufficient",
+      "historical_calendar": "YES — from/to; max ~90 days per request (page for 3y)",
+      "timestamps": "YES date (UTC)",
+      "currency_country": "YES country + currency",
+      "impact": "YES High/Medium/Low",
+      "event_name_id": "YES event name; no stable event_id (hash candidate)",
+      "lookahead_avoidance": "PARTIAL — no PIT vintage; use date as scheduled time",
+      "train_val_depth": "UNKNOWN until Free pilot — pricing table shows 5y hist on Basic/Starter",
+      "api_stability": "GOOD — docs /stable/economics-calendar; endpoint /stable/economic-calendar",
+      "fit_for_fx_xau_news_gate": "HIGH candidate for Free pilot",
+      "status": "RECOMMENDED_NEXT_PILOT",
+      "notes": "Best free/cheap fit after QG auth block. Pilot read-only first. Risk: Free may return 402 for this endpoint — confirm before any payment."
+    },
+    {
+      "provider_id": "twelve_data",
+      "product": "Economics / calendar endpoints",
+      "cost_pilot": "$0 free credits; paid Grow+",
+      "cost_if_paid": "Paid plans for deeper history",
+      "historical_calendar": "UNCLEAR / limited on free",
+      "timestamps": "varies",
+      "currency_country": "partial",
+      "impact": "unclear for FX gate",
+      "event_name_id": "unclear",
+      "lookahead_avoidance": "UNKNOWN",
+      "train_val_depth": "UNLIKELY free for 3y calendar",
+      "api_stability": "GOOD general market API",
+      "fit_for_fx_xau_news_gate": "LOW for V1 news gate",
+      "status": "DEFER",
+      "notes": "Better as OHLC alternative than news calendar primary."
+    },
+    {
+      "provider_id": "alpha_vantage",
+      "product": "ECONOMIC indicators / NEWS_SENTIMENT",
+      "cost_pilot": "$0 Free (rate limited)",
+      "cost_if_paid": "Premium tiers",
+      "historical_calendar": "NO multi-currency impact calendar matching our gate",
+      "timestamps": "series timestamps for indicators",
+      "currency_country": "indicator-specific, not calendar rows",
+      "impact": "NO calendar impact field",
+      "event_name_id": "indicator names only",
+      "lookahead_avoidance": "N/A for gate shape",
+      "train_val_depth": "N/A wrong product shape",
+      "api_stability": "GOOD",
+      "fit_for_fx_xau_news_gate": "LOW",
+      "status": "REJECT_SHAPE",
+      "notes": "Wrong product for event blackout calendar."
+    },
+    {
+      "provider_id": "econpulse",
+      "product": "Economic Calendar API",
+      "cost_pilot": "Unknown / contact",
+      "cost_if_paid": "Unknown",
+      "historical_calendar": "CLAIMS historical",
+      "timestamps": "CLAIMS",
+      "currency_country": "CLAIMS",
+      "impact": "CLAIMS",
+      "event_name_id": "CLAIMS",
+      "lookahead_avoidance": "UNKNOWN",
+      "train_val_depth": "UNKNOWN",
+      "api_stability": "Smaller vendor; docs less audited here",
+      "fit_for_fx_xau_news_gate": "MEDIUM unknown",
+      "status": "DEFER",
+      "notes": "Not chosen for pilot — prefer FMP (known Free + OpenAPI)."
+    },
+    {
+      "provider_id": "ff_scrape",
+      "product": "Forex Factory HTML scrape",
+      "cost_pilot": "$0",
+      "cost_if_paid": "$0",
+      "historical_calendar": "possible via scrape — FORBIDDEN here",
+      "timestamps": "yes if scraped",
+      "currency_country": "yes",
+      "impact": "yes",
+      "event_name_id": "yes",
+      "lookahead_avoidance": "risky + ToS/legal",
+      "train_val_depth": "N/A",
+      "api_stability": "brittle HTML",
+      "fit_for_fx_xau_news_gate": "N/A",
+      "status": "REJECT_POLICY",
+      "notes": "Hard rule: no scraping."
+    }
+  ],
+  "unauthenticated_probes": {
+    "probed_at_utc": "2026-08-06T09:48:57Z",
+    "fmp_stable_no_key": {
+      "ok": false,
+      "http_status": 401,
+      "error": "{\n  \"Error Message\": \"Invalid API KEY. Feel free to create a Free API Key or visit https://site.financialmodelingprep.com/faqs?search=why-is-my-api-key-invalid for more information.\"\n}",
+      "snippet": "{\n  \"Error Message\": \"Invalid API KEY. Feel free to create a Free API Key or visit https://site.financialmodelingprep.com/faqs?search=why-is-my-api-key-invalid for more information.\"\n}"
+    },
+    "fmp_stable_demo_key": {
+      "ok": false,
+      "http_status": 401,
+      "error": "{\n  \"Error Message\": \"Invalid API KEY. Feel free to create a Free API Key or visit https://site.financialmodelingprep.com/faqs?search=why-is-my-api-key-invalid for more information.\"\n}",
+      "snippet": "{\n  \"Error Message\": \"Invalid API KEY. Feel free to create a Free API Key or visit https://site.financialmodelingprep.com/faqs?search=why-is-my-api-key-invalid for more information.\"\n}"
+    },
+    "te_guest": {
+      "ok": false,
+      "http_status": 410,
+      "error": "<p>We are sorry, but the guest account has been discontinued.</p>\n<p>Please subscribe to a plan at <a href=\"https://tradingeconomics.com/api/pricing.aspx\">\n    https://tradingeconomics.com/api/pricing.aspx</a>.</p>",
+      "snippet": "<p>We are sorry, but the guest account has been discontinued.</p>\n<p>Please subscribe to a plan at <a href=\"https://tradingeconomics.com/api/pricing.aspx\">\n    https://tradingeconomics.com/api/pricing.aspx</a>.</p>"
+    },
+    "note": "Unauth probes only. Live Free FMP pilot requires FMP_API_KEY in .env (scripts/fmp_free_pilot_gate.py). QuantGist remains BLOCKED_AUTH."
+  },
+  "recommendation": {
+    "recommended_provider_for_next_pilot": "fmp",
+    "product": "Financial Modeling Prep — Economic Calendar API (Free tier first)",
+    "why": [
+      "QuantGist Free is BLOCKED_AUTH (401) — do not pay / do not regenerate keys now.",
+      "Trading Economics guest is dead (410); paid ~$149/mo too expensive for V1.",
+      "Finnhub Free already REJECT for 3y calendar entitlement (5.1A).",
+      "FMP Basic Free is $0 with documented historical from/to, currency, country, impact, event.",
+      "Max ~90 days per request is workable via paging for pilot + later depth if entitled.",
+      "Official docs + stable endpoint; same read-only pilot pattern as QuantGist.",
+      "If Free returns 402, stop and report — do not auto-pay; Starter ~$22/mo is cheaper than TE."
+    ],
+    "pilot_plan": {
+      "type": "documentary_validation + read-only Free pilot",
+      "script": "scripts/fmp_free_pilot_gate.py",
+      "required_env": "FMP_API_KEY",
+      "signup": "https://site.financialmodelingprep.com/register",
+      "docs": "https://site.financialmodelingprep.com/developer/docs/stable/economics-calendar",
+      "no_definitive_connector_yet": true,
+      "no_strategy_rule_changes": true,
+      "no_oos": true,
+      "no_real_orders": true,
+      "quantgist_status": "BLOCKED_AUTH — re-evaluate later separately"
+    },
+    "fallback_if_fmp_free_fails": [
+      "Inspect FMP error (401 auth vs 402 entitlement vs empty).",
+      "Only then consider FMP Starter ~$22/mo IF Free history/entitlement insufficient.",
+      "Do not default to TE ~$149 or QuantGist payment."
+    ]
+  },
+  "news_map_unchanged": {
+    "EURUSD": [
+      "EUR",
+      "USD"
+    ],
+    "GBPUSD": [
+      "GBP",
+      "USD"
+    ],
+    "USDJPY": [
+      "USD",
+      "JPY"
+    ],
+    "XAUUSD": [
+      "USD_high_impact"
+    ],
+    "BTCUSDT": [],
+    "ETHUSDT": []
+  }
+}

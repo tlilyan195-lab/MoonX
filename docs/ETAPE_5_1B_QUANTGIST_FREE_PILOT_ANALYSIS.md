@@ -2,60 +2,103 @@
 
 **Free ≠ 3y confirmation.**
 
-| Champ | Valeur |
+- QUANTGIST_FREE_PILOT = **FAIL**
+- Provider status (decision) = **BLOCKED_AUTH** / non validé (not permanently unusable)
+- 3Y_HISTORY = **DOC_ONLY**
+- LOOKAHEAD_SAFETY = **FAIL**
+- STARTER_PRICE (doc) = $19/month (https://quantgist.com/pricing.md); JSON-LD conflict $29 on /terms
+- PAYMENT_RECOMMENDATION = **NO** (do not pay; do not regenerate keys for now)
+
+## Sections (HTTP / counts)
+
+- `calendar_range`: status=401 n_events=0 fields=[]
+- `history_probe_2024`: status=401 n_events=0 fields=[]
+- `events_backtest_safe`: status=401 n_events=0 fields=[]
+
+Error class: `authentication_failed` / API key not found or has been revoked.
+
+## Schema field presence
+
+| Field | Status |
 |---|---|
-| **QUANTGIST_FREE_PILOT** | **FAIL** |
-| **3Y_HISTORY** | **DOC_ONLY** |
-| **LOOKAHEAD_SAFETY** | **FAIL** / non évaluable (pas de data) |
-| **STARTER_PRICE** | **$19/month** (doc officielle `pricing.md`) ; conflit JSON-LD `$29` non tranché |
-| **PAYMENT_RECOMMENDATION** | **NO** |
+| `id` | ABSENT |
+| `event_id` | ABSENT |
+| `canonical_id` | ABSENT |
+| `release_time` | ABSENT |
+| `date` | ABSENT |
+| `timestamp` | ABSENT |
+| `time` | ABSENT |
+| `timezone` | ABSENT |
+| `tz` | ABSENT |
+| `currency` | ABSENT |
+| `country` | ABSENT |
+| `event` | ABSENT |
+| `title` | ABSENT |
+| `name` | ABSENT |
+| `impact` | ABSENT |
+| `importance` | ABSENT |
+| `impact_score` | ABSENT |
+| `first_print` | ABSENT |
+| `revision_seq` | ABSENT |
+| `actual` | ABSENT |
+| `forecast` | ABSENT |
+| `previous` | ABSENT |
 
-## Preuve API (sample poussé `5851d51`)
+## High-impact coverage (sample)
 
-Fichier : `docs/ETAPE_5_1B_QUANTGIST_FREE_PILOT_SAMPLE.json`
-
-| Section | HTTP | Détail |
-|---|---|---|
-| `calendar_range` | **401** | `API key not found or has been revoked` |
-| `history_probe_2024` | **401** | idem |
-| `events_backtest_safe` | **401** | idem |
-
-**0 événement** reçu. Aucun champ schéma (timestamp, currency, country, event, impact, id, first_print, …) **ABSENT**.
-
-### Clarification du message local précédent
-
-`QUANTGIST_API_KEY present — wrote sample` signifiait seulement que la **variable `.env` était non vide**, pas que l’API avait accepté la clé. Le gate est corrigé pour renvoyer **FAIL** si HTTP 401/403.
-
-## Ce qui est réellement validé
-
-| Élément | Statut |
-|---|---|
-| Auth obligatoire | **API confirmé** |
-| Clé actuelle utilisable | **API FAIL** (révoquée / introuvable) |
-| Schéma Free réel | **NON VÉRIFIÉ** |
-| EUR/USD/GBP/JPY high-impact | **NON VÉRIFIÉ** |
-| Timezone / pagination / first_print | **NON VÉRIFIÉ** |
-| Historique Free (plus ancienne date) | **NON VÉRIFIÉ** |
-| Historique 3 ans | **DOC_ONLY** — Free ne confirme jamais 3 ans |
-| Look-ahead / backtest_safe | **FAIL** sur ce sample (401) |
-
-## Action requise (sans coller la clé dans le chat)
-
-1. https://quantgist.com/dashboard/keys → **révoquer l’ancienne** si besoin → **générer une nouvelle** `qg_live_...`
-2. Remplacer la valeur dans `.env` local uniquement (`QUANTGIST_API_KEY=...`)
-3. Relancer :
-
-```powershell
-cd C:\Users\Lilyan\Documents\moonx
-python scripts\quantgist_free_pilot_gate.py
-# attendre: QUANTGIST_FREE_PILOT = PASS_SAMPLE_WRITTEN  (pas FAIL auth)
-python scripts\analyze_quantgist_free_pilot.py
-git add docs/ETAPE_5_1B_QUANTGIST_FREE_PILOT_SAMPLE.json
-git status   # .env non staged
-git commit -m "chore(data): refresh QuantGist Free pilot sample (auth OK)"
-git push origin cursor/etape5-1b-qg-free-analyze-9238
+```json
+{
+  "EUR": 0,
+  "GBP": 0,
+  "JPY": 0,
+  "USD": 0
+}
 ```
 
-4. Répondre **« sample poussé »** seulement si le gate affiche `PASS_SAMPLE_WRITTEN`.
+Timestamps: oldest=`None` newest=`None` ([])
 
-Aucun paiement Starter tant que le Free pilot n’a pas de réponses **200 + events**.
+## History
+
+```json
+{
+  "probe_http_status": 401,
+  "probe_n_events": 0,
+  "oldest_timestamp_in_sample": null,
+  "newest_timestamp_in_sample": null,
+  "three_year_confirmed_by_api": false,
+  "note": "Free pilot sample must NOT be treated as 3y confirmation. Auth blocked — re-evaluate later separately."
+}
+```
+
+## Look-ahead
+
+```json
+{
+  "backtest_safe_section_present": true,
+  "backtest_safe_http": 401,
+  "backtest_safe_n_events": 0,
+  "first_print_field_seen": false,
+  "first_print_values_sample": [],
+  "revision_seq_field_seen": false,
+  "revision_seq_values_sample": [],
+  "verdict": "FAIL",
+  "note": "backtest_safe not available on this plan/key."
+}
+```
+
+## Payment gate
+
+```json
+{
+  "history_ge_3y_api_confirmed": false,
+  "eur_usd_gbp_jpy_high_impact": false,
+  "timestamp_reliable": false,
+  "impact_exploitable": false,
+  "lookahead_ok": false,
+  "cost_le_25": true,
+  "PAYMENT_RECOMMENDATION": "NO",
+  "why": "BLOCKED_AUTH. Do not pay QuantGist. Do not regenerate keys for now. Continue ÉTAPE 5.1 with FMP Free pilot. QuantGist may be re-evaluated later separately."
+}
+```
+
+See also: `docs/ETAPE_5_1B_QUANTGIST_STATUS.md`, `docs/ETAPE_5_1_NEWS_ALT_COMPARISON.md`.
