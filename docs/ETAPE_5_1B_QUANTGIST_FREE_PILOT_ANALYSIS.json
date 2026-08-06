@@ -1,0 +1,7 @@
+{
+  "QUANTGIST_FREE_PILOT": "BLOCKED_NO_SAMPLE_IN_REPO",
+  "3Y_HISTORY": "DOC_ONLY",
+  "LOOKAHEAD_SAFETY": "UNCONFIRMED",
+  "PAYMENT_RECOMMENDATION": "NO",
+  "action": "From your local moonx folder: copy docs/ETAPE_5_1B_QUANTGIST_FREE_PILOT_SAMPLE.json into the git repo, commit/push that file only (no .env), then tell the agent to continue."
+}
