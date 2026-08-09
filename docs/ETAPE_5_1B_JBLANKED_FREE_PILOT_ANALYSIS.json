@@ -1,0 +1,233 @@
+{
+  "analyzed_at_utc": "2026-08-09T21:42:21Z",
+  "sample_generated_at_utc": "2026-08-09T21:39:25Z",
+  "provider": "jblanked",
+  "product": "mql5/calendar/range",
+  "key_fingerprint": "FUrV…UppJ (len=32)",
+  "window": {
+    "label": "pilot_week_2025q4",
+    "from": "2025-10-01",
+    "to": "2025-10-07",
+    "http_status": 200,
+    "n_events": 39,
+    "raw_bytes": 11055
+  },
+  "overall": {
+    "JBLANKED_FREE_PILOT": "PASS_SAMPLE",
+    "SCHEMA_OK_FOR_NEWS_GATE": true,
+    "FX_GATE_COMPAT": "YES_WITH_CAVEATS",
+    "LOOKAHEAD_SAFETY": "PARTIAL_SCHEDULED_TIME_ONLY",
+    "3Y_HISTORY": "DOC_ONLY_NEED_MULTI_DAY_OR_CREDITS",
+    "TRAIN_VAL_FREE_FEASIBLE": "YES_SLOW_MULTI_DAY",
+    "CREDITS_REQUIRED_NOW": false,
+    "PAYMENT_RECOMMENDATION": "NO",
+    "NEXT": "Optional: multi-day Free harvest OR single larger-range history probe (still Free, 1/day). Do not buy credits yet. No connector freeze / no OOS."
+  },
+  "event_structure": {
+    "field_union": [
+      "Actual",
+      "Category",
+      "Currency",
+      "Date",
+      "Event_ID",
+      "Forecast",
+      "Impact",
+      "Name",
+      "Outcome",
+      "Previous",
+      "Quality",
+      "Strength"
+    ],
+    "required_for_gate": {
+      "Date": true,
+      "Currency": true,
+      "Impact": true,
+      "Name": true,
+      "Event_ID": true
+    },
+    "country_field": false,
+    "country_null_in_sample_events": 8,
+    "sample_events_n": 8,
+    "date_format": "YYYY.MM.DD HH:MM:SS",
+    "date_parse_ok_sample": 8,
+    "date_parse_fail_sample": 0,
+    "event_id_zero_or_null_in_sample": 1,
+    "safe_gate_fields_present": [
+      "Category",
+      "Currency",
+      "Date",
+      "Event_ID",
+      "Impact",
+      "Name"
+    ],
+    "lookahead_risky_fields_present": [
+      "Actual",
+      "Outcome",
+      "Quality",
+      "Strength"
+    ],
+    "pre_release_optional_present": [
+      "Forecast",
+      "Previous"
+    ]
+  },
+  "fx_news_gate": {
+    "compatible": true,
+    "impact_fields": true,
+    "currency_fields": true,
+    "target_currency_hits_week": 29,
+    "target_high_impact_week": 8,
+    "currencies_week": {
+      "EUR": 12,
+      "USD": 10,
+      "JPY": 7,
+      "CHF": 4,
+      "AUD": 4,
+      "CAD": 2
+    },
+    "impacts_week": {
+      "Low": 20,
+      "High": 11,
+      "Medium": 7,
+      "None": 1
+    },
+    "gbp_present_in_sample_week": false,
+    "country_usable": false,
+    "country_note": "Country absent/null — gate must key off Currency (OK for our news map).",
+    "pair_coverage_sample_week": {
+      "EURUSD": {
+        "needed_currencies": [
+          "EUR",
+          "USD"
+        ],
+        "present_in_week": [
+          "EUR",
+          "USD"
+        ],
+        "missing_in_week": [],
+        "week_ok": true,
+        "note": "Missing currency in this 1-week sample ≠ structural absence"
+      },
+      "GBPUSD": {
+        "needed_currencies": [
+          "GBP",
+          "USD"
+        ],
+        "present_in_week": [
+          "USD"
+        ],
+        "missing_in_week": [
+          "GBP"
+        ],
+        "week_ok": false,
+        "note": "Missing currency in this 1-week sample ≠ structural absence"
+      },
+      "USDJPY": {
+        "needed_currencies": [
+          "USD",
+          "JPY"
+        ],
+        "present_in_week": [
+          "USD",
+          "JPY"
+        ],
+        "missing_in_week": [],
+        "week_ok": true,
+        "note": "Missing currency in this 1-week sample ≠ structural absence"
+      },
+      "XAUUSD": {
+        "needed_currencies": [
+          "USD"
+        ],
+        "present_in_week": [
+          "USD"
+        ],
+        "missing_in_week": [],
+        "week_ok": true,
+        "note": "XAUUSD uses USD high-impact only"
+      }
+    },
+    "caveats": [
+      "1-week sample only — not 3y proof.",
+      "GBP missing in this week (structural unknown).",
+      "Event_ID can be 0 for some rows — keep Name+Date+Currency fingerprint fallback.",
+      "No Country — fine if Currency reliable."
+    ]
+  },
+  "lookahead": {
+    "verdict": "PARTIAL_SCHEDULED_TIME_ONLY",
+    "rule": "Blackout may use only scheduled Date + Currency + Impact(+ Name/Event_ID). Do NOT use Actual/Outcome/Strength/Quality to decide blackout timing or membership.",
+    "timezone": "Date has no explicit TZ in payload; JBlanked libs document offset. Must pin TZ convention before TRAIN/VAL freeze (assume UTC or documented offset).",
+    "pit_vintage": false,
+    "first_print": false,
+    "revision_seq": false,
+    "risky_if_misused": [
+      "Actual",
+      "Outcome",
+      "Quality",
+      "Strength"
+    ],
+    "safe_for_gate": [
+      "Category",
+      "Currency",
+      "Date",
+      "Event_ID",
+      "Impact",
+      "Name"
+    ]
+  },
+  "train_val_feasibility": {
+    "free_limit": "1 request/day (docs)",
+    "sample_span_days": 7,
+    "sample_n_events": 39,
+    "three_year_confirmed_by_api": false,
+    "history_status": "DOC_ONLY_NEED_MULTI_DAY_OR_CREDITS",
+    "free_path": {
+      "feasible": true,
+      "mode": "multi_day_harvest",
+      "conservative_weekly_requests": 156,
+      "calendar_days_at_1_req_per_day": 156,
+      "optimistic_monthly_requests_if_api_allows": 36,
+      "note": "Free can accumulate a 3y calendar without payment if range paging works and daily quota is used over ~1–6 months depending on page size. Not validated beyond 7-day window yet."
+    },
+    "credits_path": {
+      "needed_for_pilot_schema": false,
+      "needed_for_fast_3y_pull": true,
+      "payment_recommendation": "NO_AUTO",
+      "note": "Buy credits only after explicit approval AND after a larger historical range probe proves depth (e.g. 2023 / 2024 windows)."
+    },
+    "blocker_before_train_val": [
+      "Confirm max from/to span per request (week vs month vs longer).",
+      "Confirm GBP high-impact appears in other weeks (absent in this sample week).",
+      "Pin timezone interpretation for Date.",
+      "Freeze look-ahead rule: scheduled Date only; ignore post-release fields.",
+      "No OOS access; no strategy rule changes."
+    ]
+  },
+  "constraints": {
+    "no_strategy_rule_changes": true,
+    "no_oos": true,
+    "no_real_orders": true,
+    "no_definitive_connector": true,
+    "no_payment": true,
+    "fmp_status": "BLOCKED_ENTITLEMENT",
+    "quantgist_status": "BLOCKED_AUTH"
+  },
+  "news_map_unchanged": {
+    "EURUSD": [
+      "EUR",
+      "USD"
+    ],
+    "GBPUSD": [
+      "GBP",
+      "USD"
+    ],
+    "USDJPY": [
+      "USD",
+      "JPY"
+    ],
+    "XAUUSD": [
+      "USD"
+    ]
+  }
+}

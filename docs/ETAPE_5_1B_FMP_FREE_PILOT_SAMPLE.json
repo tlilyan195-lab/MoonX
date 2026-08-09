@@ -1,0 +1,70 @@
+{
+  "generated_at_utc": "2026-08-06T09:59:27Z",
+  "provider": "fmp",
+  "product": "stable/economic-calendar",
+  "key_present": true,
+  "key_fingerprint": "m4jo…9U4L (len=32)",
+  "windows": [
+    {
+      "label": "pilot_2025q4_overlap",
+      "from": "2025-10-01",
+      "to": "2025-12-29",
+      "url_safe": "https://financialmodelingprep.com/stable/economic-calendar?from=2025-10-01&to=2025-12-29&apikey=***",
+      "http_status": 402,
+      "ok": false,
+      "error": "Restricted Endpoint: This endpoint is not available under your current subscription please visit our subscription page to upgrade your plan at https://financialmodelingprep.com/",
+      "auth_failed": false,
+      "payment_required": true,
+      "summary": {
+        "n_events": 0
+      }
+    },
+    {
+      "label": "history_probe_2024",
+      "from": "2024-01-01",
+      "to": "2024-03-30",
+      "url_safe": "https://financialmodelingprep.com/stable/economic-calendar?from=2024-01-01&to=2024-03-30&apikey=***",
+      "http_status": 402,
+      "ok": false,
+      "error": "Restricted Endpoint: This endpoint is not available under your current subscription please visit our subscription page to upgrade your plan at https://financialmodelingprep.com/",
+      "auth_failed": false,
+      "payment_required": true,
+      "summary": {
+        "n_events": 0
+      }
+    },
+    {
+      "label": "history_probe_2023",
+      "from": "2023-01-01",
+      "to": "2023-03-30",
+      "url_safe": "https://financialmodelingprep.com/stable/economic-calendar?from=2023-01-01&to=2023-03-30&apikey=***",
+      "http_status": 402,
+      "ok": false,
+      "error": "Restricted Endpoint: This endpoint is not available under your current subscription please visit our subscription page to upgrade your plan at https://financialmodelingprep.com/",
+      "auth_failed": false,
+      "payment_required": true,
+      "summary": {
+        "n_events": 0
+      }
+    }
+  ],
+  "verdict": {
+    "FMP_FREE_PILOT": "FAIL_ENTITLEMENT_402",
+    "3Y_HISTORY": "NOT_CONFIRMED",
+    "LOOKAHEAD_SAFETY": "UNKNOWN",
+    "PAYMENT_RECOMMENDATION": "NO_AUTO",
+    "NEXT": "Free not entitled — report before any Starter (~$22) decision"
+  },
+  "constraints": {
+    "no_strategy_rule_changes": true,
+    "no_oos": true,
+    "no_real_orders": true,
+    "no_definitive_connector": true,
+    "quantgist_status": "BLOCKED_AUTH"
+  },
+  "docs_refs": [
+    "https://site.financialmodelingprep.com/developer/docs/stable/economics-calendar",
+    "https://financialmodelingprep.com/stable/economic-calendar",
+    "https://site.financialmodelingprep.com/developer/docs/pricing"
+  ]
+}
