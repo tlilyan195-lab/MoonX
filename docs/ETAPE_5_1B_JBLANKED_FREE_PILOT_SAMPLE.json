@@ -1,17 +1,255 @@
 {
-  "generated_at_utc": "2026-08-09T21:28:54Z",
+  "generated_at_utc": "2026-08-09T21:39:25Z",
   "provider": "jblanked",
   "product": "mql5/calendar/range",
-  "key_present": false,
-  "key_fingerprint": null,
+  "key_present": true,
+  "key_fingerprint": "FUrV…UppJ (len=32)",
   "free_note": "Docs: free usage decreased to 1 request/day; default gate uses ONE call.",
-  "windows": [],
+  "windows": [
+    {
+      "label": "pilot_week_2025q4",
+      "from": "2025-10-01",
+      "to": "2025-10-07",
+      "url_safe": "https://www.jblanked.com/news/api/mql5/calendar/range/?from=2025-10-01&to=2025-10-07",
+      "source": "mql5",
+      "http_status": 200,
+      "ok": true,
+      "summary": {
+        "n_events": 39,
+        "currencies": {
+          "EUR": 12,
+          "USD": 10,
+          "JPY": 7,
+          "CHF": 4,
+          "AUD": 4,
+          "CAD": 2
+        },
+        "impacts": {
+          "Low": 20,
+          "High": 11,
+          "Medium": 7,
+          "None": 1
+        },
+        "target_currency_hits": 29,
+        "target_high_impact": 8,
+        "sample_events": [
+          {
+            "name": "Retail Sales m/m",
+            "currency": "EUR",
+            "country": null,
+            "impact": "Low",
+            "date": "2025.10.06 12:00:00",
+            "event_id": 999030003,
+            "category": "Economy Report",
+            "keys": [
+              "Actual",
+              "Category",
+              "Currency",
+              "Date",
+              "Event_ID",
+              "Forecast",
+              "Impact",
+              "Name",
+              "Outcome",
+              "Previous",
+              "Quality",
+              "Strength"
+            ],
+            "fingerprint": "92cc2f3f9b26408f"
+          },
+          {
+            "name": "Retail Sales y/y",
+            "currency": "EUR",
+            "country": null,
+            "impact": "Low",
+            "date": "2025.10.06 12:00:00",
+            "event_id": 999030004,
+            "category": "Economy Report",
+            "keys": [
+              "Actual",
+              "Category",
+              "Currency",
+              "Date",
+              "Event_ID",
+              "Forecast",
+              "Impact",
+              "Name",
+              "Outcome",
+              "Previous",
+              "Quality",
+              "Strength"
+            ],
+            "fingerprint": "d642237f3f0eb4a9"
+          },
+          {
+            "name": "Unemployment Rate",
+            "currency": "CHF",
+            "country": null,
+            "impact": "High",
+            "date": "2025.10.06 08:45:00",
+            "event_id": 756040003,
+            "category": "Core Economy Report",
+            "keys": [
+              "Actual",
+              "Category",
+              "Currency",
+              "Date",
+              "Event_ID",
+              "Forecast",
+              "Impact",
+              "Name",
+              "Outcome",
+              "Previous",
+              "Quality",
+              "Strength"
+            ],
+            "fingerprint": "402b50b4a9e113a0"
+          },
+          {
+            "name": "ISM Non-Manufacturing PMI",
+            "currency": "USD",
+            "country": null,
+            "impact": "Medium",
+            "date": "2025.10.05 17:00:00",
+            "event_id": 840040003,
+            "category": "Survery Report",
+            "keys": [
+              "Actual",
+              "Category",
+              "Currency",
+              "Date",
+              "Event_ID",
+              "Forecast",
+              "Impact",
+              "Name",
+              "Outcome",
+              "Previous",
+              "Quality",
+              "Strength"
+            ],
+            "fingerprint": "d68b0d0c67267ae1"
+          },
+          {
+            "name": "Baker Hughes US Oil Rig Count",
+            "currency": "USD",
+            "country": null,
+            "impact": "None",
+            "date": "2025.10.03 20:00:00",
+            "event_id": 0,
+            "category": "Commodity Report",
+            "keys": [
+              "Actual",
+              "Category",
+              "Currency",
+              "Date",
+              "Event_ID",
+              "Forecast",
+              "Impact",
+              "Name",
+              "Outcome",
+              "Previous",
+              "Quality",
+              "Strength"
+            ],
+            "fingerprint": "938128530a0ff795"
+          },
+          {
+            "name": "Baker Hughes US Total Rig Count",
+            "currency": "USD",
+            "country": null,
+            "impact": "Low",
+            "date": "2025.10.03 20:00:00",
+            "event_id": 840100002,
+            "category": "Commodity Report",
+            "keys": [
+              "Actual",
+              "Category",
+              "Currency",
+              "Date",
+              "Event_ID",
+              "Forecast",
+              "Impact",
+              "Name",
+              "Outcome",
+              "Previous",
+              "Quality",
+              "Strength"
+            ],
+            "fingerprint": "c5d4aa031eb49159"
+          },
+          {
+            "name": "S&P Global Services PMI",
+            "currency": "USD",
+            "country": null,
+            "impact": "Low",
+            "date": "2025.10.03 16:45:00",
+            "event_id": 840500002,
+            "category": "Survery Report",
+            "keys": [
+              "Actual",
+              "Category",
+              "Currency",
+              "Date",
+              "Event_ID",
+              "Forecast",
+              "Impact",
+              "Name",
+              "Outcome",
+              "Previous",
+              "Quality",
+              "Strength"
+            ],
+            "fingerprint": "d63c814028b89dd7"
+          },
+          {
+            "name": "S&P Global Composite PMI",
+            "currency": "USD",
+            "country": null,
+            "impact": "Low",
+            "date": "2025.10.03 16:45:00",
+            "event_id": 840500003,
+            "category": "Survery Report",
+            "keys": [
+              "Actual",
+              "Category",
+              "Currency",
+              "Date",
+              "Event_ID",
+              "Forecast",
+              "Impact",
+              "Name",
+              "Outcome",
+              "Previous",
+              "Quality",
+              "Strength"
+            ],
+            "fingerprint": "6754be1a7fe31849"
+          }
+        ],
+        "field_union": [
+          "Actual",
+          "Category",
+          "Currency",
+          "Date",
+          "Event_ID",
+          "Forecast",
+          "Impact",
+          "Name",
+          "Outcome",
+          "Previous",
+          "Quality",
+          "Strength"
+        ]
+      },
+      "raw_bytes": 11055
+    }
+  ],
   "verdict": {
-    "JBLANKED_FREE_PILOT": "FAIL_NO_KEY",
-    "3Y_HISTORY": "NOT_TESTED",
-    "LOOKAHEAD_SAFETY": "DOC_PARTIAL",
+    "JBLANKED_FREE_PILOT": "PASS_SAMPLE",
+    "3Y_HISTORY": "DOC_ONLY_NEED_MULTI_DAY_OR_CREDITS",
+    "LOOKAHEAD_SAFETY": "PARTIAL_SCHEDULED_TIME_ONLY",
     "PAYMENT_RECOMMENDATION": "NO",
-    "NEXT": "Add JBLANKED_API_KEY to .env then re-run gate (1 free req/day)"
+    "NEXT": "Analyze schema/coverage; Free=1 req/day so 3y paging is slow without credits — impact_fields=True currency_fields=True"
   },
   "constraints": {
     "no_strategy_rule_changes": true,
