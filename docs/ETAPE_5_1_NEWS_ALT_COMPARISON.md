@@ -1,27 +1,27 @@
 # ÉTAPE 5.1 — NEWS GATE provider alternatives
 
-- Generated (UTC): `2026-08-06T09:48:58Z`
+- Generated (UTC): `2026-08-09T21:28:54Z`
 - Goal: free / cheapest provider for FX/XAU news blackout calendar (backtest-safe).
-- Constraints: no QuantGist payment, no key regen now, no strategy changes, no OOS, no real orders.
+- Constraints: no QuantGist/FMP auto-pay, no QG key regen, no strategy changes, no OOS, no real orders.
 
 ## Recommendation (ONE next pilot)
 
-**Provider:** `fmp` — Financial Modeling Prep — Economic Calendar API (Free tier first)
+**Provider:** `jblanked` — JBlanked News Calendar API — MQL5 calendar/range (Free first)
 
 ### Why
 
-- QuantGist Free is BLOCKED_AUTH (401) — do not pay / do not regenerate keys now.
-- Trading Economics guest is dead (410); paid ~$149/mo too expensive for V1.
-- Finnhub Free already REJECT for 3y calendar entitlement (5.1A).
-- FMP Basic Free is $0 with documented historical from/to, currency, country, impact, event.
-- Max ~90 days per request is workable via paging for pilot + later depth if entitled.
-- Official docs + stable endpoint; same read-only pilot pattern as QuantGist.
-- If Free returns 402, stop and report — do not auto-pay; Starter ~$22/mo is cheaper than TE.
+- QuantGist Free is BLOCKED_AUTH (401) — do not pay / do not regenerate keys.
+- FMP Free is BLOCKED_ENTITLEMENT (402 Restricted Endpoint) — PAYMENT_RECOMMENDATION=NO_AUTO.
+- Trading Economics guest dead (410); paid ~$149/mo rejected for V1.
+- Finnhub Free already REJECT for 3y calendar (5.1A).
+- EODHD economic-events: demo 403 + no impact field → reject for Free gate fit.
+- JBlanked Free documents currency + impact + Date + range range + event id — FX-shaped.
+- No payment required for pilot (1 free req/day); credits only if Free proves fit later.
 
 ### Pilot plan
 
-- Script: `scripts/fmp_free_pilot_gate.py`
-- Env: `FMP_API_KEY`
+- Script: `scripts/jblanked_free_pilot_gate.py`
+- Env: `JBLANKED_API_KEY`
 - Documentary validation + small read-only pilot (same pattern as QuantGist).
 - **Do not** code the definitive connector yet.
 
@@ -32,7 +32,9 @@
 | `quantgist` | `BLOCKED_AUTH` | $0 Free (auth currently broken) | Starter $19/mo official | YES (doc) — /v1/calendar/range + /v1/events | YES — time_utc + date + time_et | YES — currency + country | YES — impact High/Medium/Low + importance 1-3 | YES — event + event_id | PARTIAL — no PIT vintage; use scheduled time only | DOC_CLAIM 10y Free / 20y Starter — NOT empirically confirmed |
 | `trading_economics` | `REJECT_COST_V1` | $0 guest → HTTP 410 Gone | YES if paid | YES DateTime | YES Currency + Country | YES Importance 1-3 | YES Event + CalendarId | PARTIAL — no PIT vintage | Likely OK if paid — not piloted paid |
 | `finnhub` | `REJECT_FREE_ENTITLEMENT` | $0 Free | NO for 3y — Free not entitled (ÉTAPE 5.1A) | YES when entitled | country primarily | YES impact | event name; id weak | PARTIAL | FAIL Free entitlement |
-| `fmp` | `RECOMMENDED_NEXT_PILOT` | $0 Basic Free (250 req/day) — needs FMP_API_KEY | YES — from/to; max ~90 days per request (page for 3y) | YES date (UTC) | YES country + currency | YES High/Medium/Low | YES event name; no stable event_id (hash candidate) | PARTIAL — no PIT vintage; use date as scheduled time | UNKNOWN until Free pilot — pricing table shows 5y hist on Basic/Starter |
+| `fmp` | `BLOCKED_ENTITLEMENT` | $0 Basic Free — live key → HTTP 402 Restricted Endpoint | DOC YES — Free not entitled (pilot) | DOC YES — not received on Free | DOC YES — not received on Free | DOC YES — not received on Free | DOC YES — not received on Free | UNKNOWN on Free sample (0 events) | NOT_CONFIRMED — Free blocked |
+| `jblanked` | `RECOMMENDED_NEXT_PILOT` | $0 Free (docs: 1 request/day) — needs JBLANKED_API_KEY | YES — /mql5/calendar/range/?from=&to= | YES — Date (e.g. 2024.02.08 15:30:00) + offset guidance | YES — Currency (USD/EUR/GBP/JPY…); country via category/source | YES — High/Medium/Low/None filter + field | YES — Name + eventID (library/docs) | PARTIAL — scheduled Date only; no PIT vintage | UNKNOWN until Free pilot — range supports history; 1 req/day slows 3y |
+| `eodhd` | `REJECT_FREE_SHAPE_ENTITLEMENT` | $0 Free register — demo economic-events → 403; likely not Free-entitled | DOC from 2020 — paid feed likely | YES date YYYY-MM-DD HH:MM:SS | country only (ISO2) — no currency field | NO impact field in documented schema | type name; no stable event id | PARTIAL if entitled | from 2020 if entitled — moot without Free access + impact |
 | `twelve_data` | `DEFER` | $0 free credits; paid Grow+ | UNCLEAR / limited on free | varies | partial | unclear for FX gate | unclear | UNKNOWN | UNLIKELY free for 3y calendar |
 | `alpha_vantage` | `REJECT_SHAPE` | $0 Free (rate limited) | NO multi-currency impact calendar matching our gate | series timestamps for indicators | indicator-specific, not calendar rows | NO calendar impact field | indicator names only | N/A for gate shape | N/A wrong product shape |
 | `econpulse` | `DEFER` | Unknown / contact | CLAIMS historical | CLAIMS | CLAIMS | CLAIMS | CLAIMS | UNKNOWN | UNKNOWN |
@@ -60,9 +62,21 @@
 
 ### `fmp` — Economic Calendar API (Free tier / Starter)
 
-- Fit: HIGH candidate for Free pilot
-- API stability: GOOD — docs /stable/economics-calendar; endpoint /stable/economic-calendar
-- Notes: Best free/cheap fit after QG auth block. Pilot read-only first. Risk: Free may return 402 for this endpoint — confirm before any payment.
+- Fit: HIGH if paid; FAIL on Free
+- API stability: GOOD docs; Free = BLOCKED_ENTITLEMENT (402 all windows)
+- Notes: Confirmed FAIL_ENTITLEMENT_402. PAYMENT_RECOMMENDATION=NO_AUTO. Keep diagnostics; re-evaluate paid path only if explicitly approved.
+
+### `jblanked` — News Calendar API (MQL5 / FF / FxStreet)
+
+- Fit: HIGH for Free field shape
+- API stability: GOOD FX-focused docs; smaller vendor than FMP/TE
+- Notes: Best remaining no-pay fit after QG BLOCKED_AUTH + FMP BLOCKED_ENTITLEMENT. Prefer MQL5 source path. Pilot = one range call.
+
+### `eodhd` — Economic Events Data API
+
+- Fit: LOW (no impact; Free entitlement doubtful)
+- API stability: GOOD docs
+- Notes: Demo 403 Forbidden. Missing impact for NEWS GATE. Not next pilot.
 
 ### `twelve_data` — Economics / calendar endpoints
 
@@ -92,12 +106,12 @@
 
 - `fmp_stable_no_key`: http=401 ok=False n_items=None snippet=`{
   "Error Message": "Invalid API KEY. Feel free to create a Free API Key or visit https://site.financialmodelingprep.co`
-- `fmp_stable_demo_key`: http=401 ok=False n_items=None snippet=`{
-  "Error Message": "Invalid API KEY. Feel free to create a Free API Key or visit https://site.financialmodelingprep.co`
 - `te_guest`: http=410 ok=False n_items=None snippet=`<p>We are sorry, but the guest account has been discontinued.</p>
 <p>Please subscribe to a plan at <a href="https://trad`
+- `eodhd_demo`: http=403 ok=False n_items=None snippet=`Forbidden. Please contact support@eodhistoricaldata.com`
+- `jblanked_no_key`: http=401 ok=False n_items=None snippet=`{"message":"Either no API key was provided or the API key does not match any in our database."}`
 
-Unauth probes only. Live Free FMP pilot requires FMP_API_KEY in .env (scripts/fmp_free_pilot_gate.py). QuantGist remains BLOCKED_AUTH.
+Unauth probes only. FMP Free live = BLOCKED_ENTITLEMENT (402). Next Free pilot: JBLANKED_API_KEY + scripts/jblanked_free_pilot_gate.py. QuantGist remains BLOCKED_AUTH.
 
 
 ## News map (unchanged)
@@ -124,8 +138,8 @@ Unauth probes only. Live Free FMP pilot requires FMP_API_KEY in .env (scripts/fm
 }
 ```
 
-## QuantGist
+## Blocked / rejected (retained)
 
-- Status: **BLOCKED_AUTH** / provider non validé (not permanently unusable).
-- Diagnostics preserved: `docs/ETAPE_5_1B_QUANTGIST_*`.
-- Re-evaluate later separately; do not pay; do not regenerate keys for now.
+- QuantGist: **BLOCKED_AUTH** — `docs/ETAPE_5_1B_QUANTGIST_*`
+- FMP Free: **BLOCKED_ENTITLEMENT** (402) — `docs/ETAPE_5_1B_FMP_*` — PAYMENT=NO_AUTO
+- EODHD: **REJECT_FREE_SHAPE_ENTITLEMENT** (demo 403, no impact field)

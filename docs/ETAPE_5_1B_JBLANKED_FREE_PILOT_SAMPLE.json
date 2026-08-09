@@ -1,0 +1,29 @@
+{
+  "generated_at_utc": "2026-08-09T21:28:54Z",
+  "provider": "jblanked",
+  "product": "mql5/calendar/range",
+  "key_present": false,
+  "key_fingerprint": null,
+  "free_note": "Docs: free usage decreased to 1 request/day; default gate uses ONE call.",
+  "windows": [],
+  "verdict": {
+    "JBLANKED_FREE_PILOT": "FAIL_NO_KEY",
+    "3Y_HISTORY": "NOT_TESTED",
+    "LOOKAHEAD_SAFETY": "DOC_PARTIAL",
+    "PAYMENT_RECOMMENDATION": "NO",
+    "NEXT": "Add JBLANKED_API_KEY to .env then re-run gate (1 free req/day)"
+  },
+  "constraints": {
+    "no_strategy_rule_changes": true,
+    "no_oos": true,
+    "no_real_orders": true,
+    "no_definitive_connector": true,
+    "no_payment": true,
+    "fmp_status": "BLOCKED_ENTITLEMENT",
+    "quantgist_status": "BLOCKED_AUTH"
+  },
+  "docs_refs": [
+    "https://www.jblanked.com/news/api/docs/calendar/",
+    "https://www.jblanked.com/news/api/docs/"
+  ]
+}

@@ -90,22 +90,59 @@ PROVIDER_ROWS: tuple[ProviderRow, ...] = (
     ProviderRow(
         provider_id="fmp",
         product="Economic Calendar API (Free tier / Starter)",
-        cost_pilot="$0 Basic Free (250 req/day) — needs FMP_API_KEY",
-        cost_if_paid="Starter ~$22/mo billed annually if Free insufficient",
-        historical_calendar="YES — from/to; max ~90 days per request (page for 3y)",
-        timestamps="YES date (UTC)",
-        currency_country="YES country + currency",
-        impact="YES High/Medium/Low",
-        event_name_id="YES event name; no stable event_id (hash candidate)",
-        lookahead_avoidance="PARTIAL — no PIT vintage; use date as scheduled time",
-        train_val_depth="UNKNOWN until Free pilot — pricing table shows 5y hist on Basic/Starter",
-        api_stability="GOOD — docs /stable/economics-calendar; endpoint /stable/economic-calendar",
-        fit_for_fx_xau_news_gate="HIGH candidate for Free pilot",
+        cost_pilot="$0 Basic Free — live key → HTTP 402 Restricted Endpoint",
+        cost_if_paid="Starter ~$22/mo billed annually — NO_AUTO for now",
+        historical_calendar="DOC YES — Free not entitled (pilot)",
+        timestamps="DOC YES — not received on Free",
+        currency_country="DOC YES — not received on Free",
+        impact="DOC YES — not received on Free",
+        event_name_id="DOC YES — not received on Free",
+        lookahead_avoidance="UNKNOWN on Free sample (0 events)",
+        train_val_depth="NOT_CONFIRMED — Free blocked",
+        api_stability="GOOD docs; Free = BLOCKED_ENTITLEMENT (402 all windows)",
+        fit_for_fx_xau_news_gate="HIGH if paid; FAIL on Free",
+        status="BLOCKED_ENTITLEMENT",
+        notes=(
+            "Confirmed FAIL_ENTITLEMENT_402. PAYMENT_RECOMMENDATION=NO_AUTO. "
+            "Keep diagnostics; re-evaluate paid path only if explicitly approved."
+        ),
+    ),
+    ProviderRow(
+        provider_id="jblanked",
+        product="News Calendar API (MQL5 / FF / FxStreet)",
+        cost_pilot="$0 Free (docs: 1 request/day) — needs JBLANKED_API_KEY",
+        cost_if_paid="Optional credits/membership — do not buy until Free proves fit",
+        historical_calendar="YES — /mql5/calendar/range/?from=&to=",
+        timestamps="YES — Date (e.g. 2024.02.08 15:30:00) + offset guidance",
+        currency_country="YES — Currency (USD/EUR/GBP/JPY…); country via category/source",
+        impact="YES — High/Medium/Low/None filter + field",
+        event_name_id="YES — Name + eventID (library/docs)",
+        lookahead_avoidance="PARTIAL — scheduled Date only; no PIT vintage",
+        train_val_depth="UNKNOWN until Free pilot — range supports history; 1 req/day slows 3y",
+        api_stability="GOOD FX-focused docs; smaller vendor than FMP/TE",
+        fit_for_fx_xau_news_gate="HIGH for Free field shape",
         status="RECOMMENDED_NEXT_PILOT",
         notes=(
-            "Best free/cheap fit after QG auth block. Pilot read-only first. "
-            "Risk: Free may return 402 for this endpoint — confirm before any payment."
+            "Best remaining no-pay fit after QG BLOCKED_AUTH + FMP BLOCKED_ENTITLEMENT. "
+            "Prefer MQL5 source path. Pilot = one range call."
         ),
+    ),
+    ProviderRow(
+        provider_id="eodhd",
+        product="Economic Events Data API",
+        cost_pilot="$0 Free register — demo economic-events → 403; likely not Free-entitled",
+        cost_if_paid="Fundamentals ~$59.99/mo (site) — too costly vs need",
+        historical_calendar="DOC from 2020 — paid feed likely",
+        timestamps="YES date YYYY-MM-DD HH:MM:SS",
+        currency_country="country only (ISO2) — no currency field",
+        impact="NO impact field in documented schema",
+        event_name_id="type name; no stable event id",
+        lookahead_avoidance="PARTIAL if entitled",
+        train_val_depth="from 2020 if entitled — moot without Free access + impact",
+        api_stability="GOOD docs",
+        fit_for_fx_xau_news_gate="LOW (no impact; Free entitlement doubtful)",
+        status="REJECT_FREE_SHAPE_ENTITLEMENT",
+        notes="Demo 403 Forbidden. Missing impact for NEWS GATE. Not next pilot.",
     ),
     ProviderRow(
         provider_id="twelve_data",
@@ -214,50 +251,58 @@ def run_unauth_probes() -> dict[str, Any]:
             "https://financialmodelingprep.com/stable/economic-calendar"
             "?from=2024-01-01&to=2024-01-31"
         ),
-        "fmp_stable_demo_key": _http_json(
-            "https://financialmodelingprep.com/stable/economic-calendar"
-            "?from=2024-01-01&to=2024-01-31&apikey=demo"
-        ),
         "te_guest": _http_json(
             "https://api.tradingeconomics.com/calendar"
             "?c=guest:guest&d1=2024-01-01&d2=2024-01-31"
         ),
-        "note": (
-            "Unauth probes only. Live Free FMP pilot requires FMP_API_KEY in .env "
-            "(scripts/fmp_free_pilot_gate.py). QuantGist remains BLOCKED_AUTH."
+        "eodhd_demo": _http_json(
+            "https://eodhd.com/api/economic-events"
+            "?api_token=demo&from=2024-01-01&to=2024-01-31&fmt=json"
         ),
+        "jblanked_no_key": _http_json(
+            "https://www.jblanked.com/news/api/mql5/calendar/range/"
+            "?from=2024-01-01&to=2024-01-07"
+        ),
+        "note": (
+            "Unauth probes only. FMP Free live = BLOCKED_ENTITLEMENT (402). "
+            "Next Free pilot: JBLANKED_API_KEY + scripts/jblanked_free_pilot_gate.py. "
+            "QuantGist remains BLOCKED_AUTH."
+        ),
+        "fmp_live_sample_verdict": "FAIL_ENTITLEMENT_402",
     }
 
 
 def recommendation() -> dict[str, Any]:
     return {
-        "recommended_provider_for_next_pilot": "fmp",
-        "product": "Financial Modeling Prep — Economic Calendar API (Free tier first)",
+        "recommended_provider_for_next_pilot": "jblanked",
+        "product": "JBlanked News Calendar API — MQL5 calendar/range (Free first)",
         "why": [
-            "QuantGist Free is BLOCKED_AUTH (401) — do not pay / do not regenerate keys now.",
-            "Trading Economics guest is dead (410); paid ~$149/mo too expensive for V1.",
-            "Finnhub Free already REJECT for 3y calendar entitlement (5.1A).",
-            "FMP Basic Free is $0 with documented historical from/to, currency, country, impact, event.",
-            "Max ~90 days per request is workable via paging for pilot + later depth if entitled.",
-            "Official docs + stable endpoint; same read-only pilot pattern as QuantGist.",
-            "If Free returns 402, stop and report — do not auto-pay; Starter ~$22/mo is cheaper than TE.",
+            "QuantGist Free is BLOCKED_AUTH (401) — do not pay / do not regenerate keys.",
+            "FMP Free is BLOCKED_ENTITLEMENT (402 Restricted Endpoint) — PAYMENT_RECOMMENDATION=NO_AUTO.",
+            "Trading Economics guest dead (410); paid ~$149/mo rejected for V1.",
+            "Finnhub Free already REJECT for 3y calendar (5.1A).",
+            "EODHD economic-events: demo 403 + no impact field → reject for Free gate fit.",
+            "JBlanked Free documents currency + impact + Date + range range + event id — FX-shaped.",
+            "No payment required for pilot (1 free req/day); credits only if Free proves fit later.",
         ],
         "pilot_plan": {
-            "type": "documentary_validation + read-only Free pilot",
-            "script": "scripts/fmp_free_pilot_gate.py",
-            "required_env": "FMP_API_KEY",
-            "signup": "https://site.financialmodelingprep.com/register",
-            "docs": "https://site.financialmodelingprep.com/developer/docs/stable/economics-calendar",
+            "type": "documentary_validation + read-only Free pilot (ONE range call)",
+            "script": "scripts/jblanked_free_pilot_gate.py",
+            "required_env": "JBLANKED_API_KEY",
+            "signup": "https://www.jblanked.com/ (profile → API key)",
+            "docs": "https://www.jblanked.com/news/api/docs/calendar/",
             "no_definitive_connector_yet": True,
             "no_strategy_rule_changes": True,
             "no_oos": True,
             "no_real_orders": True,
-            "quantgist_status": "BLOCKED_AUTH — re-evaluate later separately",
+            "no_payment": True,
+            "quantgist_status": "BLOCKED_AUTH",
+            "fmp_status": "BLOCKED_ENTITLEMENT",
         },
-        "fallback_if_fmp_free_fails": [
-            "Inspect FMP error (401 auth vs 402 entitlement vs empty).",
-            "Only then consider FMP Starter ~$22/mo IF Free history/entitlement insufficient.",
-            "Do not default to TE ~$149 or QuantGist payment.",
+        "fallback_if_jblanked_free_fails": [
+            "Inspect auth / rate-limit / empty body — do not buy credits automatically.",
+            "Do not auto-pay FMP Starter, TE Standard, or QuantGist.",
+            "Escalate with residual no-pay options only (or explicit paid decision).",
         ],
     }
 
@@ -268,8 +313,10 @@ def comparison_payload(probe_results: dict[str, Any] | None = None) -> dict[str,
         "etape": "5.1_NEWS_ALT",
         "constraints": {
             "no_quantgist_payment": True,
+            "no_fmp_auto_payment": True,
             "no_key_regeneration_for_now": True,
             "quantgist_status": "BLOCKED_AUTH",
+            "fmp_status": "BLOCKED_ENTITLEMENT",
             "no_strategy_rule_changes": True,
             "no_oos": True,
             "no_real_orders": True,
