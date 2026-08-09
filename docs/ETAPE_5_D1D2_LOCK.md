@@ -37,6 +37,14 @@ Outputs under `data/snapshots/pilot_3m_2025Q4_d1d2/` (gitignored):
 - `news_jblanked_events.parquet` (D2)
 - `manifest.json` with **`data_snapshot_id`** hashing all files including news
 
+## Snapshot built (this run)
+
+- Dir: `data/snapshots/pilot_2025_10_d1d2/` (gitignored)
+- `data_snapshot_id`: `sha256:dee051b2b8a16fa029c7cc1ad8a27a6e1b56db2281c2e84a17962b79b4095bd0`
+- Period: 2025-10-01 → 2025-10-31 UTC (1-month pilot; full Q4 download rate-limited in cloud)
+- D2 news: 8 events from Free PASS sample seed (1 High = CHF → no FX blackout on mapped pairs)
+- Summary: `docs/ETAPE_5_D1D2_SNAPSHOT_SUMMARY.json`
+
 ## TRAIN/VAL sanity (no OOS, no hyperparam search)
 
 ```bash
