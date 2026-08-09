@@ -12,6 +12,11 @@ meta:
   fvg_mitigation_mode: close_through  # variants: touch | fifty_percent_fill (separate runs)
   poi_selection_mode: best_rr_then_recency  # variant: most_recent_valid (separate run)
   correlated_pair_policy: keep_both_with_warning
+  # Locked data providers for ÉTAPE 5 V1 (do not swap silently)
+  d1_market_provider: dukascopy_fx_xau_plus_binance_crypto
+  d2_news_provider: jblanked_mql5_calendar
+  d2_news_timezone: UTC
+  d2_news_gate: impact_high_plus_currency_scheduled_date_only
 
 symbols:
   FX: ["EURUSD", "GBPUSD", "USDJPY"]
@@ -90,8 +95,16 @@ volatility_filter:
   V_max: 2.5
 
 news:
+  # V1 NEWS GATE (JBlanked D2 locked):
+  # - scheduled Date only, TZ=UTC
+  # - Impact High + Currency (NEWS_CURRENCY_MAP)
+  # - ignore Actual/Outcome/Strength/Quality
+  # - missing Event_ID → fingerprint(Name|Date|Currency)
+  # - missing events → no-event (no synthetic fill)
+  provider: jblanked
+  timezone: UTC
   window_minutes: 30
-  major_window_minutes: 60
+  major_window_minutes: 60  # applied to High-impact events
 
 sessions:
   # Allow windows expressed in exchange-local TZ; engine converts via IANA.
