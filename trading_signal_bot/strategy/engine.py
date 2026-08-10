@@ -403,6 +403,11 @@ def evaluate(
         or (direction == "SHORT" and str(e.event_type.value).endswith("BEAR"))
         for e in st1.events[-5:]
     )
+    htf_aligned = bool(biases_aligned(st4.bias, st1.bias))
+
+    # Hard filter: HTF bias alignment + structure shift
+    if not (htf_aligned and structure_shift):
+        return _no_trade(symbol, ts, "no_htf_structure_alignment", ch)
 
     levels = build_liquidity_levels(
         bundle.m15.df,
@@ -528,7 +533,6 @@ def evaluate(
         theta_body=CONFIRM_THETA_BODY,
         max_bars_ago=CONFIRM_MAX_BARS,
     )
-    htf_aligned = bool(biases_aligned(st4.bias, st1.bias))
 
     if sweep is not None:
         sl_ref: float | None = float(sweep.extreme)
@@ -571,15 +575,25 @@ def evaluate(
         )
         used_price_fallback = True
 
+    # Hard filter: real POI only (no price-anchor random entries)
+    if used_price_fallback:
+        return _no_trade(symbol, ts, "no_real_poi", ch)
+
+    # Hard filter: E2 + minimum RR
+    if plan is None:
+        return _no_trade(symbol, ts, "no_liquidity_tp", ch)  # E2
+    if float(plan.rr1) < 1.2:
+        return _no_trade(symbol, ts, "rr_too_low", ch)
+
     overlap_theta = float(cfg.get("scoring", "overlap_theta", default=0.25))
     selected_overlap = (
         0.0
-        if used_price_fallback or selected is None or not valid_pois
+        if selected is None or not valid_pois
         else _poi_overlap_score(selected, valid_pois, overlap_theta)
     )
 
-    rr = float(plan.rr1) if plan is not None else None
-    rr_ok = bool(rr is not None and rr >= RR_SCORE_TARGET)
+    rr = float(plan.rr1)
+    rr_ok = bool(rr >= RR_SCORE_TARGET)
 
     score = 0
     if selected_overlap >= overlap_theta:
@@ -605,10 +619,12 @@ def evaluate(
         }
     )
 
-    if plan is None or selected is None:
-        return _no_trade(symbol, ts, "no_liquidity_tp", ch)
-
-    setup_type: Literal["A+", "A"] = "A+" if score >= 5 else "A"
+    if score >= 5:
+        setup_type: Literal["A+", "A"] = "A+"
+    elif score >= 3:
+        setup_type = "A"
+    else:
+        return _no_trade(symbol, ts, "low_score", ch)
 
     deep = 0.0
     if pd_state.pos is not None:
@@ -647,13 +663,9 @@ def evaluate(
         "f_structure_shift": float(structure_shift),
     }
 
-    validated = ["liquidity_tp"]
+    validated = ["liquidity_tp", "htf_structure_alignment", "poi_fvg_or_ob", "rr_min_1_2"]
     if rr_ok:
         validated.append("rr_ge_1_5")
-    if not used_price_fallback:
-        validated.append("poi_fvg_or_ob")
-    else:
-        validated.append("poi_price_fallback")
     if selected_overlap >= overlap_theta:
         validated.append("fvg_ob_overlap")
     if confirm_ok:
@@ -671,7 +683,7 @@ def evaluate(
 
     flags = {
         "LiquiditySweep": sweep_present,
-        "POI": not used_price_fallback,
+        "POI": True,
         "Confirm5M": confirm_ok,
         "StructureShift": structure_shift,
         "HTFAlignment": htf_aligned,
@@ -723,7 +735,7 @@ def evaluate(
             "pd_ok": pd_ok,
             "confirm_ok": confirm_ok,
             "structure_shift": structure_shift,
-            "poi_price_fallback": used_price_fallback,
+            "poi_price_fallback": False,
             "poi_count": len(valid_pois),
             "rr_ok": rr_ok,
             "rr_score_target": RR_SCORE_TARGET,
