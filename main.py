@@ -41,7 +41,7 @@ def _bundle_from_synthetic(symbol: str, n_5m: int, seed: int) -> MultiTimeframeB
 def cmd_backtest(args: argparse.Namespace) -> int:
     cfg = StrategyConfig.from_yaml(args.config)
     include_oos = bool(getattr(args, "include_oos", False))
-    print("INCLUDE OOS:", include_oos)
+    print("BACKTEST INCLUDE OOS:", include_oos)
     symbols = [
         s.strip()
         for s in str(getattr(args, "symbols", "") or args.symbol).split(",")
@@ -57,7 +57,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
             results = run_split_backtests(
                 bundle,
                 cfg,
-                include_oos=args.include_oos,
+                include_oos=include_oos,
             )
             payload = {
                 name: {
@@ -69,7 +69,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
                 }
                 for name, res in results.items()
             }
-            payload["includes_oos_metrics"] = bool(args.include_oos) and ("OOS" in results)
+            payload["includes_oos_metrics"] = include_oos and ("OOS" in results)
         else:
             res = run_backtest_on_bundle(bundle, cfg)
             payload = {
@@ -151,11 +151,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--config", default="config/strategy_v1.yaml")
     p.add_argument(
-        "--include-oos",
-        action="store_true",
-        help="Include out-of-sample evaluation in backtest",
-    )
-    p.add_argument(
         "--splits",
         action="store_true",
         help="Run TRAIN/VAL(/OOS) calibration splits (used with --mode backtest)",
@@ -229,8 +224,8 @@ def main(argv: list[str] | None = None) -> int:
                     symbols=args.symbols or args.symbol,
                     bars=args.bars,
                     seed=args.seed,
-                    splits=bool(args.splits),
-                    include_oos=bool(args.include_oos),
+                    splits=bool(getattr(args, "splits", False)),
+                    include_oos=bool(getattr(args, "include_oos", False)),
                     config=args.config,
                 )
             )
