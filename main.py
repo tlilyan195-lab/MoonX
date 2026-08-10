@@ -24,6 +24,8 @@ from trading_signal_bot.config import StrategyConfig  # noqa: E402
 from trading_signal_bot.data import MultiTimeframeBundle  # noqa: E402
 from trading_signal_bot.data.providers import make_mtf_synthetic  # noqa: E402
 
+print("RUNNING FILE:", __file__)
+
 
 def _bundle_from_synthetic(symbol: str, n_5m: int, seed: int) -> MultiTimeframeBundle:
     frames = make_mtf_synthetic(symbol, n_5m=n_5m, seed=seed)
@@ -210,6 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--config", default="config/strategy_v1.yaml")
     w.set_defaults(func=cmd_walk_forward)
 
+    print("PARSER BUILT FROM:", __file__)
     return p
 
 
