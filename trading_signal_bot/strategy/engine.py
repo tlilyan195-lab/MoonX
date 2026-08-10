@@ -1,9 +1,11 @@
 """Strategy engine: deterministic evaluate() -> SIGNAL_LONG | SIGNAL_SHORT | NO_TRADE.
 
-Hard NO_TRADE only:
+Hard NO_TRADE only (V5):
   data_quality, insufficient_bars, atr_invalid, no_directional_bias, low_score
 
-Soft scoring: HTF, structure, confirm, PD, sweep, RR tiers, price/ATR fallback.
+Soft scoring (V5): HTF, structure, confirm (+1 optional), PD, sweep, RR tiers.
+POI miss → price/ATR fallback with score penalty -1 (never hard-rejects).
+Setup: A+ if score ≥ 2, A if score ≥ 1, else low_score.
 Anti look-ahead via closed-bar asof indices. No randomness.
 """
 
@@ -335,10 +337,11 @@ def evaluate(
     news_blackout: bool = False,
 ) -> SignalDecision:
     """
-    Deterministic evaluation at 5M close timestamp `ts` (V3 scoring-based).
+    Deterministic evaluation at 5M close timestamp `ts` (V5 scoring-based).
     Uses only fully closed HTF bars with close_time <= ts.
     Hard blocks: data_quality, insufficient_bars, atr_invalid, no_directional_bias,
-    no_liquidity_tp (E2). Score is soft (incl. structure_shift); never blocks on score.
+    low_score. no_valid_poi / liquidity miss → fallback plan with score -1.
+    Confirm is optional (+1 only). A+ ≥ 2, A ≥ 1.
     """
     symbol = bundle.symbol
     asset_class = bundle.asset_class
@@ -490,6 +493,7 @@ def evaluate(
         if intersected:
             valid_pois.append(poi)
 
+    # no_valid_poi is NOT a hard reject — fallback entry + score -1 below
     if not valid_pois:
         print(
             {
@@ -513,6 +517,7 @@ def evaluate(
     else:
         pd_ok = pd_state.zone == "PREMIUM"
 
+    # Confirm is optional: scoring +1 only, never required for A/A+
     confirm_ok = _confirm_5m(
         bundle.m5.df,
         i5,
@@ -632,7 +637,7 @@ def evaluate(
         }
     )
 
-    if score >= 3:
+    if score >= 2:
         setup_type: Literal["A+", "A", "B"] = "A+"
     elif score >= 1:
         setup_type = "A"
@@ -761,6 +766,6 @@ def evaluate(
             "rr_score_target": RR_SCORE_TARGET,
             "session_ok": session_ok,
             "news_blocked": news_blocked,
-            "strategy_version": "V3",
+            "strategy_version": "V5",
         },
     )
