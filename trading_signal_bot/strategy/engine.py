@@ -1,10 +1,11 @@
 """Strategy engine: deterministic evaluate() -> SIGNAL_LONG | SIGNAL_SHORT | NO_TRADE.
 
-DEBUG MODE: high signal frequency, fully deterministic (no randomness).
-- Soft only: sweep, POI, confirm, PD, RR, score, session, news, structure
-- Hard NO_TRADE: data_quality, insufficient_bars, atr_invalid, no_directional_bias, E2
-- POI optional with price-anchor fallback; confirm relaxed (10 bars / theta_body 0.3)
-- Anti look-ahead retained; no synthetic TP (E2)
+Hard NO_TRADE only:
+  data_quality, insufficient_bars, atr_invalid, no_directional_bias, no_liquidity_tp (E2)
+
+Soft (scoring only): sweep, 5M confirm, premium/discount, RR>=1.5, POI overlap.
+Entry prefers POI midpoint-or-better; SL = POI edge ± ATR buffer; TPs liquidity-only.
+Anti look-ahead via closed-bar asof indices. No randomness.
 """
 
 from __future__ import annotations
@@ -23,7 +24,12 @@ from trading_signal_bot.liquidity import (
     detect_sweep_on_bar,
 )
 from trading_signal_bot.market_structure import biases_aligned, compute_structure
-from trading_signal_bot.risk import make_risk_plan
+from trading_signal_bot.risk import (
+    RiskPlan,
+    apply_entry_costs,
+    build_liquidity_tps,
+    build_stop,
+)
 from trading_signal_bot.signals import SignalDecision
 from trading_signal_bot.strategy.poi import (
     POI,
@@ -36,10 +42,16 @@ from trading_signal_bot.strategy.poi import (
 from trading_signal_bot.strategy.premium_discount import in_ote, premium_discount
 from trading_signal_bot.strategy.scoring import explanation_from_flags
 
+# Soft RR target for scoring (not a hard block)
+RR_SCORE_TARGET = 1.5
+# Relaxed 5M confirmation (scoring only)
+CONFIRM_MAX_BARS = 10
+CONFIRM_THETA_BODY = 0.3
+
 
 def _asof_index(df: pd.DataFrame, ts: pd.Timestamp) -> int | None:
     """Last bar index with close_time <= ts (anti look-ahead)."""
-    if df.empty:
+    if df is None or df.empty:
         return None
     idx = df.index.searchsorted(ts, side="right") - 1
     if idx < 0:
@@ -68,8 +80,6 @@ def _no_trade(
 
 def _session_ok(ts: pd.Timestamp, asset_class: AssetClass, cfg: StrategyConfig) -> bool:
     if asset_class == "CRYPTO":
-        if cfg.get("sessions", "crypto_allow_all_until_calibrated", default=True):
-            return True
         return True
     windows_raw = cfg.get("sessions", "fx_default", default=[]) or []
     windows = [
@@ -81,6 +91,7 @@ def _session_ok(ts: pd.Timestamp, asset_class: AssetClass, cfg: StrategyConfig) 
 
 
 def _vol_ok(df_15m: pd.DataFrame, asof: int, cfg: StrategyConfig) -> bool:
+    """Kept for optional re-enable; not used as a hard gate."""
     period = cfg.atr_period
     w = int(cfg.get("volatility_filter", "W_vol", default=100))
     vmin = float(cfg.get("volatility_filter", "V_min", default=0.5))
@@ -102,15 +113,13 @@ def _confirm_5m(
     asof_5m: int,
     direction: Literal["LONG", "SHORT"],
     n_pivot: int,
-    theta_body: float,
     atr_period: int,
-    max_bars_ago: int = 10,
+    theta_body: float = CONFIRM_THETA_BODY,
+    max_bars_ago: int = CONFIRM_MAX_BARS,
 ) -> bool:
-    """
-    Soft 5M confirmation (scoring only — never hard-blocks evaluate).
-    Relaxed DEBUG defaults: max_bars_ago=10, callers typically pass theta_body=0.3.
-    Uses closed bars only via asof_index (anti look-ahead).
-    """
+    """Soft 5M BOS/CHoCH confirmation (scoring only). Closed bars only."""
+    if df_5m is None or df_5m.empty or asof_5m < 0:
+        return False
     st = compute_structure(
         df_5m.iloc[: asof_5m + 1],
         n_pivot=n_pivot,
@@ -122,27 +131,47 @@ def _confirm_5m(
     if not st.events:
         return False
     last = st.events[-1]
-    if asof_5m - last.index > max_bars_ago:
+    if asof_5m - int(last.index) > max_bars_ago:
         return False
-    if direction == "LONG" and not last.event_type.value.endswith("BULL"):
+    if direction == "LONG" and not str(last.event_type.value).endswith("BULL"):
         return False
-    if direction == "SHORT" and not last.event_type.value.endswith("BEAR"):
+    if direction == "SHORT" and not str(last.event_type.value).endswith("BEAR"):
         return False
-    row = df_5m.iloc[last.index]
+    row = df_5m.iloc[int(last.index)]
     rng = float(row["high"] - row["low"])
+    if rng <= 0:
+        return False
     body = abs(float(row["close"] - row["open"]))
-    return rng > 0 and (body / rng) >= theta_body
+    return (body / rng) >= theta_body
 
 
-def _debug_risk_cfg(cfg: StrategyConfig) -> dict:
+def _poi_mid(poi: POI) -> float:
+    return 0.5 * (float(poi.top) + float(poi.bottom))
+
+
+def _entry_in_poi(
+    direction: Literal["LONG", "SHORT"],
+    poi: POI,
+    price: float,
+) -> float:
     """
-    Risk cfg for DEBUG MODE: rr_min forced to 0 so liquidity TPs with any
-    positive RR are accepted. E2 still applies (no liquidity TP → no plan).
-    Config rr_min remains available for scoring only.
+    Optimized entry inside POI: midpoint or better.
+    LONG  → mid or lower (closer to demand)
+    SHORT → mid or higher (closer to supply)
     """
-    risk_cfg = dict(cfg.get("risk", default={}) or {})
-    risk_cfg["rr_min"] = 0.0
-    return risk_cfg
+    bottom = float(poi.bottom)
+    top = float(poi.top)
+    if top < bottom:
+        bottom, top = top, bottom
+    mid = 0.5 * (top + bottom)
+    px = float(price)
+    if direction == "LONG":
+        if bottom <= px <= top:
+            return float(min(px, mid))
+        return float(mid)
+    if bottom <= px <= top:
+        return float(max(px, mid))
+    return float(mid)
 
 
 def _price_anchor_poi(
@@ -152,41 +181,34 @@ def _price_anchor_poi(
     ts: pd.Timestamp,
     asof_index: int,
 ) -> POI:
-    """
-    Fallback POI anchored at raw price so make_risk_plan can run without a
-    detected FVG/OB. Geometry is tiny; SL still comes from sweep/swing via
-    build_stop; TPs remain liquidity-only (no fabrication).
-    """
-    pad = max(float(atr_value) * 0.05, abs(price) * 1e-5)
+    """Tiny synthetic POI at price when no FVG/OB — enables SL geometry + plan."""
+    pad = max(float(atr_value) * 0.05, abs(float(price)) * 1e-5, 1e-12)
     if direction == "LONG":
-        bottom, top = price - pad, price
-        want = "BULL"
+        bottom, top = float(price) - pad, float(price)
+        want: Literal["BULL", "BEAR"] = "BULL"
     else:
-        bottom, top = price, price + pad
+        bottom, top = float(price), float(price) + pad
         want = "BEAR"
     return POI(
         poi_id=f"PRICE_ANCHOR_{want}:{ts.isoformat()}",
         poi_type="FVG",
-        direction=want,  # type: ignore[arg-type]
-        bottom=float(bottom),
-        top=float(top),
+        direction=want,
+        bottom=bottom,
+        top=top,
         created_ts=ts,
-        created_index=asof_index,
+        created_index=int(asof_index),
         mitigated=False,
     )
 
 
 def _poi_overlap_score(poi: POI, others: list[POI], theta: float) -> float:
-    """Max overlap of `poi` with opposite-type POIs in `others` (0 or 1 if >= theta)."""
     best = 0.0
     for other in others:
         if other.poi_id == poi.poi_id:
             continue
         if poi.poi_type == other.poi_type:
             continue
-        # Only FVG↔OB confluence counts
-        types = {poi.poi_type, other.poi_type}
-        if types != {"FVG", "OB"}:
+        if {poi.poi_type, other.poi_type} != {"FVG", "OB"}:
             continue
         best = max(best, poi.overlaps(other))
     if best >= theta:
@@ -194,66 +216,116 @@ def _poi_overlap_score(poi: POI, others: list[POI], theta: float) -> float:
     return best
 
 
-def _select_poi(
-    candidates: list[POI],
-    mode: str,
+def _make_plan(
     direction: Literal["LONG", "SHORT"],
     raw_entry: float,
-    sweep_extreme: float,
+    poi: POI,
     levels: list,
     atr_value: float,
     asset_class: str,
     cfg: StrategyConfig,
-) -> tuple[POI | None, Any]:
+    sl_ref: float | None = None,
+) -> RiskPlan | None:
     """
-    P1 tie-break (deterministic):
-      best RR → recency → FVG+OB overlap → OB → FVG
-    Variant: most_recent_valid (separate run).
+    Build risk plan in-engine:
+      - entry from caller (POI mid-or-better or raw price)
+      - SL from POI edge ± ATR buffer (build_stop)
+      - TP from liquidity only (E2); rr_min=0 so low RR is scoring-only
     """
-    risk_cfg = _debug_risk_cfg(cfg)
+    if not np.isfinite(raw_entry) or not np.isfinite(atr_value) or atr_value <= 0:
+        return None
+
+    risk_cfg = cfg.get("risk", default={}) or {}
     costs_cfg = cfg.get("costs", default={}) or {}
+    theta_sl = float(risk_cfg.get("theta_sl_atr", 0.15))
+
+    entry, cost = apply_entry_costs(
+        direction, float(raw_entry), float(atr_value), asset_class, costs_cfg
+    )
+
+    # SL: POI extreme ± ATR buffer; sl_ref tightens further when present
+    if direction == "LONG":
+        extreme = float(poi.bottom) if sl_ref is None else min(float(sl_ref), float(poi.bottom))
+    else:
+        extreme = float(poi.top) if sl_ref is None else max(float(sl_ref), float(poi.top))
+
+    sl = build_stop(direction, extreme, poi, float(atr_value), theta_sl)
+
+    if direction == "LONG" and not (entry > sl):
+        return None
+    if direction == "SHORT" and not (entry < sl):
+        return None
+
+    risk = abs(entry - sl)
+    if risk <= 0 or not np.isfinite(risk):
+        return None
+
+    # E2: any opposite liquidity TP (rr_min=0); no synthetic TP
+    tp1_lv, tp2_lv, tp1, tp2 = build_liquidity_tps(
+        direction, entry, sl, levels, float(atr_value), rr_min=0.0
+    )
+    if tp1 is None or tp1_lv is None:
+        return None
+
+    rr1 = abs(float(tp1) - entry) / risk
+    if not np.isfinite(rr1):
+        return None
+    rr2 = abs(float(tp2) - entry) / risk if tp2 is not None else None
+
+    return RiskPlan(
+        direction=direction,
+        entry=float(entry),
+        sl=float(sl),
+        tp1=float(tp1),
+        tp2=float(tp2) if tp2 is not None else None,
+        rr1=float(rr1),
+        rr2=float(rr2) if rr2 is not None else None,
+        risk_distance=float(risk),
+        tp1_level_id=tp1_lv.level_id,
+        tp2_level_id=tp2_lv.level_id if tp2_lv else None,
+        cost_applied=float(cost),
+    )
+
+
+def _select_poi_plan(
+    candidates: list[POI],
+    mode: str,
+    direction: Literal["LONG", "SHORT"],
+    price: float,
+    levels: list,
+    atr_value: float,
+    asset_class: str,
+    cfg: StrategyConfig,
+    sl_ref: float | None,
+) -> tuple[POI | None, RiskPlan | None]:
+    """Deterministic POI pick: best RR → recency → FVG+OB overlap → OB → FVG."""
     overlap_theta = float(cfg.get("scoring", "overlap_theta", default=0.25))
-    scored: list[tuple[float, float, float, int, POI, Any]] = []
+    scored: list[tuple[float, float, float, int, POI, RiskPlan]] = []
     for poi in candidates:
-        plan = make_risk_plan(
-            direction,
-            raw_entry,
-            sweep_extreme,
-            poi,
-            levels,
-            atr_value,
-            asset_class,
-            risk_cfg,
-            costs_cfg,
+        raw_entry = _entry_in_poi(direction, poi, price)
+        plan = _make_plan(
+            direction, raw_entry, poi, levels, atr_value, asset_class, cfg, sl_ref
         )
         if plan is None:
             continue
         ov = _poi_overlap_score(poi, candidates, overlap_theta)
-        # type_rank: OB=1, FVG=0 for ascending sort we invert later
         type_rank = 1 if poi.poi_type == "OB" else 0
         scored.append(
             (
-                plan.rr1,
-                poi.created_ts.timestamp(),
-                ov,
+                float(plan.rr1),
+                float(poi.created_ts.timestamp()),
+                float(ov),
                 type_rank,
                 poi,
                 plan,
             )
         )
-
     if not scored:
         return None, None
-
     if mode == "most_recent_valid":
         scored.sort(key=lambda x: x[1], reverse=True)
-        return scored[0][4], scored[0][5]
-
-    # best RR → recency → overlap → OB → FVG
-    scored.sort(
-        key=lambda x: (x[0], x[1], x[2], x[3]),
-        reverse=True,
-    )
+    else:
+        scored.sort(key=lambda x: (x[0], x[1], x[2], x[3]), reverse=True)
     return scored[0][4], scored[0][5]
 
 
@@ -266,9 +338,6 @@ def evaluate(
     """
     Deterministic evaluation at 5M close timestamp `ts`.
     Uses only fully closed HTF bars with close_time <= ts.
-
-    DEBUG MODE: soft sweep/POI/confirm/PD/RR/score; hard NO_TRADE only for
-    data_quality / insufficient_bars / atr_invalid / no_directional_bias / E2.
     """
     symbol = bundle.symbol
     asset_class = bundle.asset_class
@@ -286,20 +355,16 @@ def evaluate(
         return _no_trade(symbol, ts, "insufficient_bars", ch)
     assert i5 is not None and i15 is not None and i1 is not None and i4 is not None
 
-    # Evaluate on last fully closed 5M bar at/before ts (anti look-ahead)
     ts = pd.Timestamp(ts)
     if ts.tzinfo is None:
         ts = ts.tz_localize("UTC")
     else:
         ts = ts.tz_convert("UTC")
+    # Snap to last closed 5M bar (anti look-ahead)
     ts = bundle.m5.df.index[i5]
 
-    # DEBUG MODE: news / session soft only (do not block)
     news_blocked = bool(news_blackout)
     session_ok = _session_ok(ts, asset_class, cfg)
-    # Volatility filter disabled (soften trade frequency); keep helper for later re-enable.
-    # if not _vol_ok(bundle.m15.df, i15, cfg):
-    #     return _no_trade(symbol, ts, "volatility_filter", ch)
 
     n4 = int(cfg.get("pivots", "N_4H", default=2))
     n1 = int(cfg.get("pivots", "N_1H", default=2))
@@ -315,8 +380,7 @@ def evaluate(
     st1 = compute_structure(
         bundle.h1.df, n1, atr_period, theta_body, theta_disp, asof_index=i1
     )
-    # HTF bias alignment is informational only (no hard NO_TRADE block).
-    # Direction prefers 1H structure; fall back to 4H; NEUTRAL → NO_TRADE.
+
     if st1.bias == "BULL":
         direction: Literal["LONG", "SHORT"] = "LONG"
     elif st1.bias == "BEAR":
@@ -333,7 +397,7 @@ def evaluate(
             ch,
             meta={"bias_4h": st4.bias, "bias_1h": st1.bias},
         )
-    # Soft signal: structure shift (DEBUG MODE — no hard NO_TRADE)
+
     structure_shift = bool(st1.bos_count_in_bias >= 1) or any(
         (direction == "LONG" and str(e.event_type.value).endswith("BULL"))
         or (direction == "SHORT" and str(e.event_type.value).endswith("BEAR"))
@@ -353,12 +417,14 @@ def evaluate(
         asof_1h=i1,
     )
 
-    # Soft signal: liquidity sweep (no hard NO_TRADE)
+    # Soft: liquidity sweep
     x_max = int(cfg.get("confirmation", "X_max_bars_15m_after_sweep", default=6))
     sweep = None
     start_i = max(0, i15 - x_max)
     for j in range(i15, start_i - 1, -1):
-        evs = detect_sweep_on_bar(bundle.m15.df.iloc[j], bundle.m15.df.index[j], j, levels)
+        evs = detect_sweep_on_bar(
+            bundle.m15.df.iloc[j], bundle.m15.df.index[j], j, levels
+        )
         for ev in evs:
             if direction == "LONG" and ev.direction_taken == "LOW":
                 sweep = ev
@@ -370,18 +436,21 @@ def evaluate(
             break
 
     atr_15 = atr(bundle.m15.df.iloc[: i15 + 1], atr_period)
-    atr_v = float(atr_15.iloc[i15])
+    atr_v = float(atr_15.iloc[i15]) if len(atr_15) else float("nan")
     if not np.isfinite(atr_v) or atr_v <= 0:
         return _no_trade(symbol, ts, "atr_invalid", ch)
 
+    price = float(bundle.m5.df.iloc[i5]["close"])
     sweep_present = False
     if sweep is not None:
-        bars_since = i15 - sweep.index
-        dist = abs(float(bundle.m5.df.iloc[i5]["close"]) - sweep.extreme) / atr_v
-        if bars_since <= x_max and dist <= float(cfg.get("liquidity", "D_max_atr", default=2.0)):
+        bars_since = i15 - int(sweep.index)
+        dist = abs(price - float(sweep.extreme)) / atr_v
+        if bars_since <= x_max and dist <= float(
+            cfg.get("liquidity", "D_max_atr", default=2.0)
+        ):
             sweep_present = True
         else:
-            sweep = None  # expired / too far → treat as absent for scoring + SL ref
+            sweep = None
 
     mit_mode = cfg.fvg_mitigation_mode
     fvgs = detect_fvgs(
@@ -390,7 +459,6 @@ def evaluate(
         float(cfg.get("fvg", "theta_fvg_atr", default=0.15)),
         i15,
     )
-    # BOS indices on 15M for OB detection
     st15 = compute_structure(
         bundle.m15.df, n15, atr_period, theta_body, theta_disp, asof_index=i15
     )
@@ -405,22 +473,21 @@ def evaluate(
     )
 
     want_dir = "BULL" if direction == "LONG" else "BEAR"
-    poi_window_start = sweep.index if sweep is not None else max(0, i15 - x_max)
+    poi_window_start = int(sweep.index) if sweep is not None else max(0, i15 - x_max)
     valid_pois: list[POI] = []
     for poi in fvgs + obs:
         if poi.direction != want_dir:
             continue
-        if sweep is not None and poi.created_index < sweep.index:
-            # Prefer POIs formed after/during reaction; allow OB slightly before if still unmitigated
-            if poi.poi_type == "FVG":
-                continue
+        if sweep is not None and poi.created_index < sweep.index and poi.poi_type == "FVG":
+            continue
         if poi.poi_type == "FVG" and is_fvg_mitigated(
             poi, bundle.m15.df, poi.created_index, i15, mit_mode  # type: ignore[arg-type]
         ):
             continue
-        if poi.poi_type == "OB" and is_ob_invalidated(poi, bundle.m15.df, poi.created_index, i15):
+        if poi.poi_type == "OB" and is_ob_invalidated(
+            poi, bundle.m15.df, poi.created_index, i15
+        ):
             continue
-        # Price must intersect POI on recent 15M bar(s)
         intersected = False
         for k in range(poi_window_start, i15 + 1):
             if bar_intersects_poi(bundle.m15.df.iloc[k], poi):
@@ -429,7 +496,6 @@ def evaluate(
         if intersected:
             valid_pois.append(poi)
 
-    # Soft: empty POI list is diagnostic only — evaluation continues with price fallback
     if not valid_pois:
         print(
             {
@@ -446,81 +512,103 @@ def evaluate(
         i1,
         discount_max=float(cfg.get("premium_discount", "discount_max", default=0.45)),
         premium_min=float(cfg.get("premium_discount", "premium_min", default=0.55)),
-        price=float(bundle.m5.df.iloc[i5]["close"]),
+        price=price,
     )
-    # Soft signal: premium/discount (no hard NO_TRADE)
     if direction == "LONG":
         pd_ok = pd_state.zone == "DISCOUNT"
     else:
         pd_ok = pd_state.zone == "PREMIUM"
 
-    # Soft signal: 5M confirmation (relaxed; scoring only — never hard-blocks)
     confirm_ok = _confirm_5m(
         bundle.m5.df,
         i5,
         direction,
         n5,
-        0.3,  # relaxed theta_body
         atr_period,
-        max_bars_ago=10,
+        theta_body=CONFIRM_THETA_BODY,
+        max_bars_ago=CONFIRM_MAX_BARS,
     )
-
-    # Soft signal: HTF alignment (already not a hard block)
     htf_aligned = bool(biases_aligned(st4.bias, st1.bias))
 
-    raw_entry = float(bundle.m5.df.iloc[i5]["close"])
-    # SL reference: sweep extreme when present, else last swing / ATR fallback
     if sweep is not None:
-        sl_ref = float(sweep.extreme)
+        sl_ref: float | None = float(sweep.extreme)
     elif direction == "LONG":
-        sl_ref = float(st1.last_swing_low) if st1.last_swing_low is not None else raw_entry - atr_v
+        sl_ref = (
+            float(st1.last_swing_low)
+            if st1.last_swing_low is not None
+            else price - atr_v
+        )
     else:
-        sl_ref = float(st1.last_swing_high) if st1.last_swing_high is not None else raw_entry + atr_v
+        sl_ref = (
+            float(st1.last_swing_high)
+            if st1.last_swing_high is not None
+            else price + atr_v
+        )
 
     mode = str(cfg.get("meta", "poi_selection_mode", default="best_rr_then_recency"))
     selected: POI | None = None
-    plan: Any = None
+    plan: RiskPlan | None = None
     used_price_fallback = False
 
     if valid_pois:
-        selected, plan = _select_poi(
+        selected, plan = _select_poi_plan(
             valid_pois,
             mode,
             direction,
-            raw_entry,
-            sl_ref,
+            price,
             levels,
             atr_v,
             asset_class,
             cfg,
+            sl_ref,
         )
 
     if selected is None or plan is None:
-        # Fallback risk plan from raw price (DEBUG MODE)
-        costs_cfg = cfg.get("costs", default={}) or {}
-        selected = _price_anchor_poi(direction, raw_entry, atr_v, ts, i15)
-        plan = make_risk_plan(
-            direction,
-            raw_entry,
-            sl_ref,
-            selected,
-            levels,
-            atr_v,
-            asset_class,
-            _debug_risk_cfg(cfg),
-            costs_cfg,
+        selected = _price_anchor_poi(direction, price, atr_v, ts, i15)
+        raw_entry = _entry_in_poi(direction, selected, price)
+        plan = _make_plan(
+            direction, raw_entry, selected, levels, atr_v, asset_class, cfg, sl_ref
         )
         used_price_fallback = True
 
-    # RR / overlap scoring features (soft — never hard-block)
-    rr_min = float(cfg.rr_min)
-    rr_ok = bool(plan is not None and float(plan.rr1) >= rr_min)
     overlap_theta = float(cfg.get("scoring", "overlap_theta", default=0.25))
     selected_overlap = (
         0.0
-        if (used_price_fallback or selected is None or not valid_pois)
+        if used_price_fallback or selected is None or not valid_pois
         else _poi_overlap_score(selected, valid_pois, overlap_theta)
     )
+
+    rr = float(plan.rr1) if plan is not None else None
+    rr_ok = bool(rr is not None and rr >= RR_SCORE_TARGET)
+
+    score = 0
+    if selected_overlap >= overlap_theta:
+        score += 2
+    if confirm_ok:
+        score += 1
+    if pd_ok:
+        score += 1
+    if sweep_present:
+        score += 1
+    if rr_ok:
+        score += 2
+
+    print(
+        {
+            "ts": ts,
+            "score": score,
+            "rr": rr,
+            "sweep": sweep_present,
+            "confirm": confirm_ok,
+            "pd": pd_ok,
+            "poi_count": len(valid_pois),
+        }
+    )
+
+    if plan is None or selected is None:
+        return _no_trade(symbol, ts, "no_liquidity_tp", ch)
+
+    setup_type: Literal["A+", "A"] = "A+" if score >= 5 else "A"
 
     deep = 0.0
     if pd_state.pos is not None:
@@ -540,39 +628,6 @@ def evaluate(
         else:
             ote_flag = 1.0 if in_ote(pd_state.pos) else 0.0
 
-    # Discrete setup score (does NOT block trades)
-    score = 0
-    if selected_overlap >= overlap_theta:
-        score += 2
-    if confirm_ok:
-        score += 1
-    if pd_ok:
-        score += 1
-    if sweep_present:
-        score += 1
-    if rr_ok:
-        score += 2
-
-    print(
-        {
-            "ts": ts,
-            "score": score,
-            "rr": float(plan.rr1) if plan else None,
-            "sweep": sweep_present,
-            "confirm": confirm_ok,
-            "pd": pd_ok,
-            "poi_count": len(valid_pois),
-        }
-    )
-
-    if plan is None or selected is None:
-        return _no_trade(symbol, ts, "no_liquidity_tp", ch)  # E2 — no synthetic TP
-
-    if score >= 5:
-        setup_type: Literal["A+", "A"] = "A+"
-    else:
-        setup_type = "A"
-
     features = {
         "f_overlap_fvg_ob": float(selected_overlap >= overlap_theta),
         "f_deep_pd": deep,
@@ -580,7 +635,7 @@ def evaluate(
         "f_maj_liq": 1.0 if (sweep is not None and sweep.level.major) else 0.0,
         "f_mtf_fvg": 0.0,
         "f_disp": 1.0 if any(e.displacement_ok for e in st15.events[-3:]) else 0.0,
-        "f_rr": min(float(plan.rr1) / 3.0, 1.0),
+        "f_rr": min(float(plan.rr1) / 3.0, 1.0) if plan.rr1 else 0.0,
         "f_rr_ok": float(rr_ok),
         "f_htf_aligned": float(htf_aligned),
         "f_sweep_present": float(sweep_present),
@@ -589,15 +644,12 @@ def evaluate(
         "f_session_ok": float(session_ok),
         "f_news_blocked": float(news_blocked),
         "f_poi_count": float(len(valid_pois)),
+        "f_structure_shift": float(structure_shift),
     }
 
     validated = ["liquidity_tp"]
     if rr_ok:
-        validated.append("rr_min")
-    if session_ok:
-        validated.append("session_ok")
-    if structure_shift:
-        validated.append("structure_shift")
+        validated.append("rr_ge_1_5")
     if not used_price_fallback:
         validated.append("poi_fvg_or_ob")
     else:
@@ -610,8 +662,12 @@ def evaluate(
         validated.append("premium_discount")
     if sweep_present:
         validated.append("liquidity_sweep")
+    if structure_shift:
+        validated.append("structure_shift")
     if htf_aligned:
         validated.append("htf_aligned")
+    if session_ok:
+        validated.append("session_ok")
 
     flags = {
         "LiquiditySweep": sweep_present,
@@ -651,6 +707,7 @@ def evaluate(
         meta={
             "sweep_time": str(sweep.ts) if sweep is not None else None,
             "poi_type": selected.poi_type,
+            "poi_mid": _poi_mid(selected),
             "fvg_mitigation_mode": mit_mode,
             "poi_selection_mode": mode,
             "asset_class": asset_class,
@@ -659,7 +716,6 @@ def evaluate(
             "tp1_level_id": plan.tp1_level_id,
             "tp2_level_id": plan.tp2_level_id,
             "selected_poi_overlap": selected_overlap,
-            "confirm_5m_event_index": None,
             "setup_type": setup_type,
             "score": score,
             "htf_aligned": htf_aligned,
@@ -670,9 +726,8 @@ def evaluate(
             "poi_price_fallback": used_price_fallback,
             "poi_count": len(valid_pois),
             "rr_ok": rr_ok,
-            "rr_min": rr_min,
+            "rr_score_target": RR_SCORE_TARGET,
             "session_ok": session_ok,
             "news_blocked": news_blocked,
-            "debug_mode": True,
         },
     )
