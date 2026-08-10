@@ -566,7 +566,33 @@ def evaluate(
         used_price_fallback = True
 
     if plan is None:
-        return _no_trade(symbol, ts, "no_liquidity_tp", ch)
+        # V5: ATR geometric fallback — avoid total block when no liquidity TP
+        fallback_entry = float(price)
+        if direction == "LONG":
+            fallback_sl = float(price) - float(atr_v)
+            fallback_tp1 = float(price) + 2.0 * float(atr_v)
+            fallback_tp2 = float(price) + 3.0 * float(atr_v)
+        else:
+            fallback_sl = float(price) + float(atr_v)
+            fallback_tp1 = float(price) - 2.0 * float(atr_v)
+            fallback_tp2 = float(price) - 3.0 * float(atr_v)
+        risk_distance = abs(fallback_entry - fallback_sl)
+        plan = RiskPlan(
+            direction=direction,
+            entry=fallback_entry,
+            sl=fallback_sl,
+            tp1=fallback_tp1,
+            tp2=fallback_tp2,
+            rr1=2.0,
+            rr2=3.0,
+            risk_distance=float(risk_distance),
+            tp1_level_id="fallback",
+            tp2_level_id="fallback",
+            cost_applied=0.0,
+        )
+        used_price_fallback = True
+        if selected is None:
+            selected = _price_anchor_poi(direction, price, atr_v, ts, i15)
 
     overlap_theta = float(cfg.get("scoring", "overlap_theta", default=0.25))
     selected_overlap = (
@@ -577,27 +603,23 @@ def evaluate(
 
     rr = float(plan.rr1)
     rr_ok = rr >= 1.5
+    sweep_present = sweep_valid
 
-    # Score (soft HTF/structure/RR/fallback — hard filters listed separately)
     score = 0
     if htf_aligned:
         score += 2
     if structure_shift:
         score += 1
-    if confirm_ok:
-        score += 1
-    if pd_ok:
-        score += 1
-    if sweep_valid:
-        score += 1
     if rr >= 1.5:
         score += 2
     elif rr >= 1.0:
         score += 1
-    else:
-        score -= 1
-    if selected_overlap >= overlap_theta:
-        score += 2
+    if confirm_ok:
+        score += 1
+    if pd_ok:
+        score += 1
+    if sweep_present:
+        score += 1
     if used_price_fallback:
         score -= 1
 
@@ -606,17 +628,14 @@ def evaluate(
             "ts": ts,
             "score": score,
             "rr": rr,
-            "sweep": sweep_valid,
-            "confirm": confirm_ok,
-            "pd": pd_ok,
-            "poi_count": len(valid_pois),
             "fallback": used_price_fallback,
+            "symbol": symbol,
         }
     )
 
-    if score >= 4:
+    if score >= 3:
         setup_type: Literal["A+", "A", "B"] = "A+"
-    elif score >= 2:
+    elif score >= 1:
         setup_type = "A"
     else:
         return _no_trade(symbol, ts, "low_score", ch)

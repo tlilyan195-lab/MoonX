@@ -40,30 +40,46 @@ def _bundle_from_synthetic(symbol: str, n_5m: int, seed: int) -> MultiTimeframeB
 
 def cmd_backtest(args: argparse.Namespace) -> int:
     cfg = StrategyConfig.from_yaml(args.config)
-    bundle = _bundle_from_synthetic(args.symbol, args.bars, args.seed)
-    if args.splits:
-        # P0: default calibration isolation — TRAIN/VAL only
-        results = run_split_backtests(bundle, cfg, include_oos=False)
-        payload = {
-            name: {
+    include_oos = bool(getattr(args, "include_oos", False))
+    symbols = [
+        s.strip()
+        for s in str(getattr(args, "symbols", "") or args.symbol).split(",")
+        if s.strip()
+    ]
+    if not symbols:
+        symbols = [args.symbol]
+
+    by_symbol: dict = {}
+    for symbol in symbols:
+        bundle = _bundle_from_synthetic(symbol, args.bars, args.seed)
+        if args.splits:
+            results = run_split_backtests(bundle, cfg, include_oos=include_oos)
+            payload = {
+                name: {
+                    "metrics": res.metrics.to_dict(),
+                    "n_decisions": len(res.decisions),
+                    "config_hash": res.config_hash,
+                    "meta": {k: v for k, v in res.meta.items() if k != "val_monte_carlo"}
+                    | {"val_monte_carlo": res.meta.get("val_monte_carlo")},
+                }
+                for name, res in results.items()
+            }
+            payload["includes_oos_metrics"] = include_oos and ("OOS" in results)
+        else:
+            res = run_backtest_on_bundle(bundle, cfg)
+            payload = {
                 "metrics": res.metrics.to_dict(),
                 "n_decisions": len(res.decisions),
                 "config_hash": res.config_hash,
-                "meta": {k: v for k, v in res.meta.items() if k != "val_monte_carlo"}
-                | {"val_monte_carlo": res.meta.get("val_monte_carlo")},
+                "meta": res.meta,
             }
-            for name, res in results.items()
-        }
-        payload["includes_oos_metrics"] = False
+            payload["includes_oos_metrics"] = False
+        by_symbol[symbol] = payload
+
+    if len(by_symbol) == 1:
+        print(json.dumps(next(iter(by_symbol.values())), indent=2, default=str))
     else:
-        res = run_backtest_on_bundle(bundle, cfg)
-        payload = {
-            "metrics": res.metrics.to_dict(),
-            "n_decisions": len(res.decisions),
-            "config_hash": res.config_hash,
-            "meta": res.meta,
-        }
-    print(json.dumps(payload, indent=2, default=str))
+        print(json.dumps({"symbols": by_symbol}, indent=2, default=str))
     return 0
 
 
@@ -133,12 +149,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     b = sub.add_parser("backtest", help="Run backtest engine (ÉTAPE 4)")
     b.add_argument("--symbol", default="EURUSD")
+    b.add_argument(
+        "--symbols",
+        default="",
+        help="Comma-separated symbols (overrides --symbol). "
+        "Example: XAUUSD,EURUSD,GBPUSD,USDJPY",
+    )
     b.add_argument("--bars", type=int, default=3000)
     b.add_argument("--seed", type=int, default=42)
     b.add_argument(
         "--splits",
         action="store_true",
         help="Run TRAIN/VAL calibration splits (OOS excluded by default)",
+    )
+    b.add_argument(
+        "--include-oos",
+        action="store_true",
+        help="Include OOS split metrics when using --splits "
+        "(explicit opt-in; default remains TRAIN/VAL only)",
     )
     b.add_argument("--config", default="config/strategy_v1.yaml")
     b.set_defaults(func=cmd_backtest)
@@ -176,9 +204,11 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_backtest(
                 argparse.Namespace(
                     symbol="EURUSD",
+                    symbols="XAUUSD,EURUSD,GBPUSD,USDJPY",
                     bars=3000,
                     seed=42,
                     splits=False,
+                    include_oos=False,
                     config=args.config,
                 )
             )
