@@ -1,12 +1,12 @@
 """Strategy engine: deterministic evaluate() -> SIGNAL_LONG | SIGNAL_SHORT | NO_TRADE.
 
-Hard NO_TRADE (V6):
-  data_quality, insufficient_bars, atr_invalid, no_directional_bias,
-  high_vol_range, fallback_rr, confirm_rr, low_score
+Hard NO_TRADE only (V6 frequency):
+  data_quality, insufficient_bars, atr_invalid, no_directional_bias
 
-Soft scoring (V6): HTF, structure, valid POI (+1), confirm (+1), PD, sweep, RR tiers.
-Fallback allowed only when RR >= 2.0. No confirm allowed only when RR >= 2.5.
-Setup: A+ if score ≥ 3, A if score ≥ 2, else low_score.
+Soft scoring: HTF (+2), structure (+1), RR tiers, confirm/sweep/PD (+1 optional).
+No valid POI → fallback entry with score -1 (never hard-rejects).
+If bias + ATR valid + RR ≥ 1.0 → always emit a trade.
+Setup: A+ if score ≥ 2, A if score ≥ 1 (or forced), else low_score.
 Anti look-ahead via closed-bar asof indices. No randomness.
 """
 
@@ -46,10 +46,7 @@ from trading_signal_bot.strategy.scoring import explanation_from_flags
 
 # Soft RR target for scoring (not a hard block)
 RR_SCORE_TARGET = 1.5
-# V6 quality gates
-RR_FALLBACK_MIN = 2.0
-RR_NO_CONFIRM_MIN = 2.5
-# Relaxed 5M confirmation (scoring + soft gate)
+# Relaxed 5M confirmation (scoring only — never blocks)
 CONFIRM_MAX_BARS = 10
 CONFIRM_THETA_BODY = 0.3
 
@@ -95,36 +92,23 @@ def _session_ok(ts: pd.Timestamp, asset_class: AssetClass, cfg: StrategyConfig) 
     return is_in_session_windows(ts, windows)
 
 
-def _vol_ratio(df_15m: pd.DataFrame, asof: int, cfg: StrategyConfig) -> float:
-    """ATR(now) / ATR(median lookback); NaN if unavailable."""
+def _vol_ok(df_15m: pd.DataFrame, asof: int, cfg: StrategyConfig) -> bool:
+    """Kept for optional re-enable; not used as a hard gate."""
     period = cfg.atr_period
     w = int(cfg.get("volatility_filter", "W_vol", default=100))
+    vmin = float(cfg.get("volatility_filter", "V_min", default=0.5))
+    vmax = float(cfg.get("volatility_filter", "V_max", default=2.5))
     sub = df_15m.iloc[: asof + 1]
     atr_s = atr(sub, period)
     if asof < w or not np.isfinite(atr_s.iloc[asof]):
-        return float("nan")
+        return False
     atr_now = float(atr_s.iloc[asof])
     atr_ref = float(atr_s.iloc[asof - w : asof + 1].median())
     if atr_ref <= 0:
-        return float("nan")
-    return atr_now / atr_ref
-
-
-def _vol_ok(df_15m: pd.DataFrame, asof: int, cfg: StrategyConfig) -> bool:
-    """Kept for optional re-enable; not used as a hard gate alone."""
-    vmin = float(cfg.get("volatility_filter", "V_min", default=0.5))
-    vmax = float(cfg.get("volatility_filter", "V_max", default=2.5))
-    ratio = _vol_ratio(df_15m, asof, cfg)
-    if not np.isfinite(ratio):
         return False
+    ratio = atr_now / atr_ref
     return vmin <= ratio <= vmax
 
-
-def _is_high_vol(df_15m: pd.DataFrame, asof: int, cfg: StrategyConfig) -> bool:
-    """HIGH_VOL when vol ratio exceeds V_max."""
-    vmax = float(cfg.get("volatility_filter", "V_max", default=2.5))
-    ratio = _vol_ratio(df_15m, asof, cfg)
-    return bool(np.isfinite(ratio) and ratio > vmax)
 
 def _confirm_5m(
     df_5m: pd.DataFrame,
@@ -354,11 +338,11 @@ def evaluate(
     news_blackout: bool = False,
 ) -> SignalDecision:
     """
-    Deterministic evaluation at 5M close timestamp `ts` (V6 quality gates).
+    Deterministic evaluation at 5M close timestamp `ts` (V6 frequency).
     Uses only fully closed HTF bars with close_time <= ts.
-    Hard blocks: data_quality, insufficient_bars, atr_invalid, no_directional_bias,
-    high_vol_range, fallback_rr (<2.0), confirm_rr (no confirm & RR<2.5), low_score.
-    Valid POI adds +1. A+ ≥ 3, A ≥ 2.
+    Hard blocks: data_quality, insufficient_bars, atr_invalid, no_directional_bias.
+    No POI → fallback (-1). Confirm/sweep/PD optional (+1). A+ ≥ 2, A ≥ 1.
+    Force trade when bias + ATR valid + RR ≥ 1.0.
     """
     symbol = bundle.symbol
     asset_class = bundle.asset_class
@@ -458,24 +442,6 @@ def evaluate(
     if not np.isfinite(atr_v) or atr_v <= 0:
         return _no_trade(symbol, ts, "atr_invalid", ch)
 
-    # V6 regime filter: reject HIGH_VOL + RANGE
-    high_vol = _is_high_vol(bundle.m15.df, i15, cfg)
-    is_range = st4.bias in ("RANGE", "NEUTRAL") or st1.bias in ("RANGE", "NEUTRAL")
-    if high_vol and is_range:
-        return _no_trade(
-            symbol,
-            ts,
-            "high_vol_range",
-            ch,
-            meta={
-                "bias_4h": st4.bias,
-                "bias_1h": st1.bias,
-                "high_vol": high_vol,
-                "is_range": is_range,
-                "vol_ratio": _vol_ratio(bundle.m15.df, i15, cfg),
-            },
-        )
-
     price = float(bundle.m5.df.iloc[i5]["close"])
     sweep_valid = False
     if sweep is not None:
@@ -528,17 +494,6 @@ def evaluate(
         if intersected:
             valid_pois.append(poi)
 
-    # no_valid_poi is NOT a hard reject — fallback entry + score -1 below
-    if not valid_pois:
-        print(
-            {
-                "diag": "no_valid_poi",
-                "ts": str(ts),
-                "symbol": symbol,
-                "direction": direction,
-            }
-        )
-
     pd_state = premium_discount(
         bundle.h1.df,
         n1,
@@ -552,7 +507,7 @@ def evaluate(
     else:
         pd_ok = pd_state.zone == "PREMIUM"
 
-    # Confirm: +1 when True; when False allowed only if RR >= 2.5 (checked after plan)
+    # Confirm optional: +1 only if present (never blocks)
     confirm_ok = _confirm_5m(
         bundle.m5.df,
         i5,
@@ -581,7 +536,7 @@ def evaluate(
     mode = str(cfg.get("meta", "poi_selection_mode", default="best_rr_then_recency"))
     selected: POI | None = None
     plan: RiskPlan | None = None
-    used_price_fallback = False
+    fallback_entry = False
 
     if valid_pois:
         selected, plan = _select_poi_plan(
@@ -596,17 +551,18 @@ def evaluate(
             sl_ref,
         )
 
+    # No valid POI (or no usable plan) → fallback entry, never hard-reject
     if selected is None or plan is None:
         selected = _price_anchor_poi(direction, price, atr_v, ts, i15)
         raw_entry = _entry_in_poi(direction, selected, price)
         plan = _make_plan(
             direction, raw_entry, selected, levels, atr_v, asset_class, cfg, sl_ref
         )
-        used_price_fallback = True
+        fallback_entry = True
 
     if plan is None:
-        # ATR geometric fallback — avoid total block when no liquidity TP
-        fallback_entry = float(price)
+        # ATR geometric fallback — always produce a plan when ATR is valid
+        fb_entry = float(price)
         if direction == "LONG":
             fallback_sl = float(price) - float(atr_v)
             fallback_tp1 = float(price) + 2.0 * float(atr_v)
@@ -615,10 +571,10 @@ def evaluate(
             fallback_sl = float(price) + float(atr_v)
             fallback_tp1 = float(price) - 2.0 * float(atr_v)
             fallback_tp2 = float(price) - 3.0 * float(atr_v)
-        risk_distance = abs(fallback_entry - fallback_sl)
+        risk_distance = abs(fb_entry - fallback_sl)
         plan = RiskPlan(
             direction=direction,
-            entry=fallback_entry,
+            entry=fb_entry,
             sl=fallback_sl,
             tp1=fallback_tp1,
             tp2=fallback_tp2,
@@ -629,42 +585,21 @@ def evaluate(
             tp2_level_id="fallback",
             cost_applied=0.0,
         )
-        used_price_fallback = True
+        fallback_entry = True
         if selected is None:
             selected = _price_anchor_poi(direction, price, atr_v, ts, i15)
 
     overlap_theta = float(cfg.get("scoring", "overlap_theta", default=0.25))
     selected_overlap = (
         0.0
-        if used_price_fallback or not valid_pois
+        if fallback_entry or not valid_pois
         else _poi_overlap_score(selected, valid_pois, overlap_theta)
     )
 
     rr = float(plan.rr1)
-    rr_ok = rr >= 1.5
     sweep_present = sweep_valid
-    has_valid_poi = bool(valid_pois)
 
-    # V6: control fallback abuse — require RR >= 2.0
-    if used_price_fallback and rr < RR_FALLBACK_MIN:
-        return _no_trade(
-            symbol,
-            ts,
-            "fallback_rr",
-            ch,
-            meta={"rr": rr, "fallback": True, "rr_min": RR_FALLBACK_MIN},
-        )
-
-    # V6: no confirm allowed only when RR >= 2.5
-    if (not confirm_ok) and rr < RR_NO_CONFIRM_MIN:
-        return _no_trade(
-            symbol,
-            ts,
-            "confirm_rr",
-            ch,
-            meta={"rr": rr, "confirm_ok": False, "rr_min": RR_NO_CONFIRM_MIN},
-        )
-
+    # Core structure + optional secondary signals (never block)
     score = 0
     if htf_aligned:
         score += 2
@@ -680,10 +615,7 @@ def evaluate(
         score += 1
     if sweep_present:
         score += 1
-    # V6: POI quality boost
-    if has_valid_poi:
-        score += 1
-    if used_price_fallback:
+    if fallback_entry:
         score -= 1
 
     print(
@@ -691,16 +623,20 @@ def evaluate(
             "ts": ts,
             "score": score,
             "rr": rr,
-            "fallback": used_price_fallback,
+            "fallback": fallback_entry,
             "confirm": confirm_ok,
-            "poi": has_valid_poi,
-            "symbol": symbol,
+            "sweep": sweep_present,
+            "pd": pd_ok,
         }
     )
 
-    if score >= 3:
+    # Thresholds: A+ ≥ 2, A ≥ 1
+    # Force trade when bias (already passed) + ATR valid + RR ≥ 1.0
+    if score >= 2:
         setup_type: Literal["A+", "A", "B"] = "A+"
-    elif score >= 2:
+    elif score >= 1:
+        setup_type = "A"
+    elif rr >= 1.0:
         setup_type = "A"
     else:
         return _no_trade(symbol, ts, "low_score", ch)
@@ -740,33 +676,24 @@ def evaluate(
         "f_news_blocked": float(news_blocked),
         "f_poi_count": float(len(valid_pois)),
         "f_structure_shift": float(structure_shift),
-        "f_price_fallback": float(used_price_fallback),
-        "f_has_valid_poi": float(has_valid_poi),
-        "f_high_vol": float(high_vol),
-        "f_is_range": float(is_range),
+        "f_price_fallback": float(fallback_entry),
     }
 
     validated = ["liquidity_tp"]
     if structure_shift:
         validated.append("structure_shift")
-    if not used_price_fallback:
+    if not fallback_entry:
         validated.append("poi_fvg_or_ob")
     else:
         validated.append("poi_price_fallback")
-    if rr >= 2.5:
-        validated.append("rr_ge_2_5")
-    elif rr >= 2.0:
-        validated.append("rr_ge_2_0")
-    elif rr >= 1.5:
+    if rr >= 1.5:
         validated.append("rr_ge_1_5")
-    elif rr >= 1.2:
-        validated.append("rr_ge_1_2")
+    elif rr >= 1.0:
+        validated.append("rr_ge_1_0")
     if selected_overlap >= overlap_theta:
         validated.append("fvg_ob_overlap")
     if confirm_ok:
         validated.append("confirm_5m")
-    elif rr >= RR_NO_CONFIRM_MIN:
-        validated.append("confirm_waived_rr")
     if pd_ok:
         validated.append("premium_discount")
     if sweep_valid:
@@ -775,12 +702,10 @@ def evaluate(
         validated.append("htf_aligned")
     if session_ok:
         validated.append("session_ok")
-    if has_valid_poi:
-        validated.append("valid_poi")
 
     flags = {
         "LiquiditySweep": sweep_valid,
-        "POI": not used_price_fallback,
+        "POI": not fallback_entry,
         "Confirm5M": confirm_ok,
         "StructureShift": structure_shift,
         "HTFAlignment": htf_aligned,
@@ -832,15 +757,11 @@ def evaluate(
             "pd_ok": pd_ok,
             "confirm_ok": confirm_ok,
             "structure_shift": structure_shift,
-            "poi_price_fallback": used_price_fallback,
+            "poi_price_fallback": fallback_entry,
+            "fallback_entry": fallback_entry,
             "poi_count": len(valid_pois),
-            "has_valid_poi": has_valid_poi,
             "rr": rr,
             "rr_score_target": RR_SCORE_TARGET,
-            "rr_fallback_min": RR_FALLBACK_MIN,
-            "rr_no_confirm_min": RR_NO_CONFIRM_MIN,
-            "high_vol": high_vol,
-            "is_range": is_range,
             "session_ok": session_ok,
             "news_blocked": news_blocked,
             "strategy_version": "V6",
