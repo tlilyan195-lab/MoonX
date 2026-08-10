@@ -263,18 +263,31 @@ def evaluate(
     st1 = compute_structure(
         bundle.h1.df, n1, atr_period, theta_body, theta_disp, asof_index=i1
     )
-    if not biases_aligned(st4.bias, st1.bias):
+    # HTF bias alignment is informational only (no hard NO_TRADE block).
+    # Direction prefers 1H structure; fall back to 4H; NEUTRAL → NO_TRADE.
+    if st1.bias == "BULL":
+        direction: Literal["LONG", "SHORT"] = "LONG"
+    elif st1.bias == "BEAR":
+        direction = "SHORT"
+    elif st4.bias == "BULL":
+        direction = "LONG"
+    elif st4.bias == "BEAR":
+        direction = "SHORT"
+    else:
         return _no_trade(
             symbol,
             ts,
-            "htf_bias_misaligned",
+            "no_directional_bias",
             ch,
             meta={"bias_4h": st4.bias, "bias_1h": st1.bias},
         )
-    if st1.bos_count_in_bias < 1:
-        return _no_trade(symbol, ts, "missing_bos_1h", ch)
-
-    direction: Literal["LONG", "SHORT"] = "LONG" if st4.bias == "BULL" else "SHORT"
+    structure_shift = bool(st1.bos_count_in_bias >= 1) or any(
+        (direction == "LONG" and str(e.event_type.value).endswith("BULL"))
+        or (direction == "SHORT" and str(e.event_type.value).endswith("BEAR"))
+        for e in st1.events[-5:]
+    )
+    if not structure_shift:
+        return _no_trade(symbol, ts, "no_structure_shift", ch)
 
     levels = build_liquidity_levels(
         bundle.m15.df,
@@ -407,6 +420,16 @@ def evaluate(
     if selected is None or plan is None:
         return _no_trade(symbol, ts, "no_liquidity_tp_or_rr", ch)  # E2
 
+    # Keep RR filter (no fake TP)
+    if float(plan.rr1) < float(cfg.rr_min):
+        return _no_trade(
+            symbol,
+            ts,
+            "rr_below_min",
+            ch,
+            meta={"rr": float(plan.rr1), "rr_min": float(cfg.rr_min)},
+        )
+
     # P1 A+: overlap must involve the *selected* POI, not unrelated POI pairs
     overlap_theta = float(cfg.get("scoring", "overlap_theta", default=0.25))
     selected_overlap = _poi_overlap_score(selected, valid_pois, overlap_theta)
@@ -448,13 +471,26 @@ def evaluate(
         require_overlap_for_aplus=cfg.require_overlap_for_aplus,
     )
 
-    # Hard gate already passed; category B => log-only => decision still signal but caller filters alerts
-    if breakdown.category == "NO_TRADE":
-        return _no_trade(symbol, ts, "score_below_B", ch)
+    # Category from structural gates (not score thresholds alone).
+    # A+ keeps FVG+OB overlap requirement; A allows FVG or OB.
+    has_fvg = any(p.poi_type == "FVG" for p in valid_pois)
+    has_ob = any(p.poi_type == "OB" for p in valid_pois)
+    fvg_ob_overlap = bool(selected_overlap >= overlap_theta)
+    liquidity_sweep = True  # sweep already required above
+    # structure_shift already enforced earlier; keep explicit for category rule
+    is_aplus = fvg_ob_overlap and liquidity_sweep and structure_shift
+    is_a = (has_fvg or has_ob) and liquidity_sweep and structure_shift
+    if is_aplus:
+        setup_type: Literal["A+", "A"] = "A+"
+    elif is_a:
+        setup_type = "A"
+    else:
+        return _no_trade(symbol, ts, "setup_not_a_or_aplus", ch)
+
+    print({"setup": setup_type, "rr": float(plan.rr1)})
 
     validated = [
-        "htf_bias_aligned",
-        "bos_1h",
+        "structure_shift",
         "liquidity_sweep",
         "poi_fvg_or_ob",
         "confirm_5m",
@@ -462,12 +498,15 @@ def evaluate(
         "session_vol_ok",
         "premium_discount",
     ]
+    if fvg_ob_overlap:
+        validated.append("fvg_ob_overlap")
     flags = {
         "LiquiditySweep": True,
         "POI": True,
         "Confirm5M": True,
-        "HTFAlignment": True,
-        "OverlapFVGOB": features["f_overlap_fvg_ob"] >= 1.0,
+        "StructureShift": True,
+        "HTFAlignment": bool(biases_aligned(st4.bias, st1.bias)),
+        "OverlapFVGOB": fvg_ob_overlap,
         "MajorLiquidity": bool(sweep.level.major),
     }
 
@@ -479,7 +518,7 @@ def evaluate(
         symbol=symbol,
         ts_utc=ts,
         direction=direction,
-        category=breakdown.category,
+        category=setup_type,
         setup_score=breakdown.score,
         entry=plan.entry,
         sl=plan.sl,
@@ -507,5 +546,10 @@ def evaluate(
             "tp2_level_id": plan.tp2_level_id,
             "selected_poi_overlap": selected_overlap,
             "confirm_5m_event_index": None,
+            "setup_type": setup_type,
+            "htf_bias_aligned": bool(biases_aligned(st4.bias, st1.bias)),
+            "has_fvg": has_fvg,
+            "has_ob": has_ob,
+            "structure_shift": structure_shift,
         },
     )
