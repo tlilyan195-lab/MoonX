@@ -4,8 +4,9 @@ DEBUG MODE: massively increase trade count to test edge.
 - POI not hard-required; fallback risk plan from raw price when no POI
 - _confirm_5m always True
 - Scoring kept for meta/debug but does not block trades
-- Only hard RR filter among soft gates: rr >= rr_min
-- Anti look-ahead, risk plan logic, and no TP fabrication retained
+- RR is scoring-only (no hard rr_min NO_TRADE); E2 no synthetic TP retained
+- Hard NO_TRADE only: data_quality, no_directional_bias, atr_invalid (+ E2 / insufficient bars)
+- Anti look-ahead and risk plan logic retained
 """
 
 from __future__ import annotations
@@ -110,6 +111,17 @@ def _confirm_5m(
     return True
 
 
+def _debug_risk_cfg(cfg: StrategyConfig) -> dict:
+    """
+    Risk cfg for DEBUG MODE: rr_min forced to 0 so liquidity TPs with any
+    positive RR are accepted. E2 still applies (no liquidity TP → no plan).
+    Config rr_min remains available for scoring only.
+    """
+    risk_cfg = dict(cfg.get("risk", default={}) or {})
+    risk_cfg["rr_min"] = 0.0
+    return risk_cfg
+
+
 def _price_anchor_poi(
     direction: Literal["LONG", "SHORT"],
     price: float,
@@ -175,7 +187,7 @@ def _select_poi(
       best RR → recency → FVG+OB overlap → OB → FVG
     Variant: most_recent_valid (separate run).
     """
-    risk_cfg = cfg.get("risk", default={}) or {}
+    risk_cfg = _debug_risk_cfg(cfg)
     costs_cfg = cfg.get("costs", default={}) or {}
     overlap_theta = float(cfg.get("scoring", "overlap_theta", default=0.25))
     scored: list[tuple[float, float, float, int, POI, Any]] = []
@@ -232,8 +244,9 @@ def evaluate(
     Deterministic evaluation at 5M close timestamp `ts`.
     Uses only fully closed HTF bars with close_time <= ts.
 
-    DEBUG MODE: POI optional; confirm always on; score does not block;
-    hard filter among soft gates is rr >= rr_min only (plus E2 no synthetic TP).
+    DEBUG MODE: POI optional; confirm always on; score/RR do not block;
+    hard NO_TRADE only for data_quality / no_directional_bias / atr_invalid
+    (plus E2 no synthetic TP, and insufficient_bars when indices missing).
     """
     symbol = bundle.symbol
     asset_class = bundle.asset_class
@@ -259,10 +272,9 @@ def evaluate(
         ts = ts.tz_convert("UTC")
     ts = bundle.m5.df.index[i5]
 
-    if news_blackout:
-        return _no_trade(symbol, ts, "news_blackout", ch)
-    if not _session_ok(ts, asset_class, cfg):
-        return _no_trade(symbol, ts, "session_filter", ch)
+    # DEBUG MODE: news / session soft only (do not block)
+    news_blocked = bool(news_blackout)
+    session_ok = _session_ok(ts, asset_class, cfg)
     # Volatility filter disabled (soften trade frequency); keep helper for later re-enable.
     # if not _vol_ok(bundle.m15.df, i15, cfg):
     #     return _no_trade(symbol, ts, "volatility_filter", ch)
@@ -299,7 +311,7 @@ def evaluate(
             ch,
             meta={"bias_4h": st4.bias, "bias_1h": st1.bias},
         )
-    # Soft signal: structure shift (DEBUG MODE — no hard NO_TRADE; only rr_min remains)
+    # Soft signal: structure shift (DEBUG MODE — no hard NO_TRADE)
     structure_shift = bool(st1.bos_count_in_bias >= 1) or any(
         (direction == "LONG" and str(e.event_type.value).endswith("BULL"))
         or (direction == "SHORT" and str(e.event_type.value).endswith("BEAR"))
@@ -453,7 +465,6 @@ def evaluate(
 
     if selected is None or plan is None:
         # Fallback risk plan from raw price (DEBUG MODE)
-        risk_cfg = cfg.get("risk", default={}) or {}
         costs_cfg = cfg.get("costs", default={}) or {}
         selected = _price_anchor_poi(direction, raw_entry, atr_v, ts, i15)
         plan = make_risk_plan(
@@ -464,24 +475,17 @@ def evaluate(
             levels,
             atr_v,
             asset_class,
-            risk_cfg,
+            _debug_risk_cfg(cfg),
             costs_cfg,
         )
         used_price_fallback = True
 
     if plan is None:
-        return _no_trade(symbol, ts, "no_liquidity_tp_or_rr", ch)  # E2 — no synthetic TP
+        return _no_trade(symbol, ts, "no_liquidity_tp", ch)  # E2 — no synthetic TP
 
-    # Keep RR hard filter (no fake TP / under-min RR)
+    # RR is scoring-only (DEBUG MODE) — config rr_min never hard-blocks
     rr_min = float(cfg.rr_min)
-    if float(plan.rr1) < rr_min:
-        return _no_trade(
-            symbol,
-            ts,
-            "rr_below_min",
-            ch,
-            meta={"rr": float(plan.rr1), "rr_min": rr_min},
-        )
+    rr_ok = float(plan.rr1) >= rr_min
 
     # P1 overlap on *selected* POI only (0 when price-fallback)
     overlap_theta = float(cfg.get("scoring", "overlap_theta", default=0.25))
@@ -517,10 +521,13 @@ def evaluate(
         "f_mtf_fvg": 0.0,
         "f_disp": 1.0 if any(e.displacement_ok for e in st15.events[-3:]) else 0.0,
         "f_rr": min(plan.rr1 / 3.0, 1.0),
+        "f_rr_ok": float(rr_ok),
         "f_htf_aligned": float(htf_aligned),
         "f_sweep_present": float(sweep_present),
         "f_pd_ok": float(pd_ok),
         "f_confirm_ok": float(confirm_ok),
+        "f_session_ok": float(session_ok),
+        "f_news_blocked": float(news_blocked),
     }
 
     # Discrete setup score (kept for meta/debug — does NOT block trades)
@@ -533,8 +540,8 @@ def evaluate(
         score += 1
     if sweep_present:
         score += 1
-    if float(plan.rr1) >= rr_min:
-        score += 2
+    if rr_ok:
+        score += 2  # RR as scoring feature only
 
     if score >= 5:
         setup_type: Literal["A+", "A"] = "A+"
@@ -547,6 +554,7 @@ def evaluate(
             "score": score,
             "setup": setup_type,
             "rr": float(plan.rr1),
+            "rr_ok": rr_ok,
             "sweep": sweep_present,
             "confirm": confirm_ok,
             "pd": pd_ok,
@@ -554,7 +562,11 @@ def evaluate(
         }
     )
 
-    validated = ["rr_min", "session_ok"]
+    validated = ["liquidity_tp"]
+    if rr_ok:
+        validated.append("rr_min")
+    if session_ok:
+        validated.append("session_ok")
     if structure_shift:
         validated.append("structure_shift")
     if not used_price_fallback:
@@ -627,6 +639,10 @@ def evaluate(
             "confirm_ok": confirm_ok,
             "structure_shift": structure_shift,
             "poi_price_fallback": used_price_fallback,
+            "rr_ok": rr_ok,
+            "rr_min": rr_min,
+            "session_ok": session_ok,
+            "news_blocked": news_blocked,
             "debug_mode": True,
         },
     )
