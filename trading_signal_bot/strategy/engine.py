@@ -485,7 +485,7 @@ def evaluate(
     if selected_overlap >= overlap_theta:
         score += 2
     if confirm_ok:
-        score += 2
+        score += 1  # reduced from +2 to raise trade count
     if pd_ok:
         score += 1
     if sweep_present:
@@ -495,7 +495,7 @@ def evaluate(
 
     if score >= 5:
         setup_type: Literal["A+", "A"] = "A+"
-    elif score >= 3:
+    elif score >= 2:
         setup_type = "A"
     else:
         return _no_trade(
@@ -518,8 +518,9 @@ def evaluate(
             "score": score,
             "setup": setup_type,
             "rr": float(plan.rr1),
-            "pd_ok": pd_ok,
+            "sweep": sweep_present,
             "confirm": confirm_ok,
+            "pd": pd_ok,
         }
     )
 
