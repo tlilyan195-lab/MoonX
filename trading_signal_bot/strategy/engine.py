@@ -1,11 +1,12 @@
 """Strategy engine: deterministic evaluate() -> SIGNAL_LONG | SIGNAL_SHORT | NO_TRADE.
 
-Hard NO_TRADE only (V5):
-  data_quality, insufficient_bars, atr_invalid, no_directional_bias, low_score
+Hard NO_TRADE (V6):
+  data_quality, insufficient_bars, atr_invalid, no_directional_bias,
+  high_vol_range, fallback_rr, confirm_rr, low_score
 
-Soft scoring (V5): HTF, structure, confirm (+1 optional), PD, sweep, RR tiers.
-POI miss → price/ATR fallback with score penalty -1 (never hard-rejects).
-Setup: A+ if score ≥ 2, A if score ≥ 1, else low_score.
+Soft scoring (V6): HTF, structure, valid POI (+1), confirm (+1), PD, sweep, RR tiers.
+Fallback allowed only when RR >= 2.0. No confirm allowed only when RR >= 2.5.
+Setup: A+ if score ≥ 3, A if score ≥ 2, else low_score.
 Anti look-ahead via closed-bar asof indices. No randomness.
 """
 
@@ -45,7 +46,10 @@ from trading_signal_bot.strategy.scoring import explanation_from_flags
 
 # Soft RR target for scoring (not a hard block)
 RR_SCORE_TARGET = 1.5
-# Relaxed 5M confirmation (scoring only)
+# V6 quality gates
+RR_FALLBACK_MIN = 2.0
+RR_NO_CONFIRM_MIN = 2.5
+# Relaxed 5M confirmation (scoring + soft gate)
 CONFIRM_MAX_BARS = 10
 CONFIRM_THETA_BODY = 0.3
 
@@ -91,23 +95,36 @@ def _session_ok(ts: pd.Timestamp, asset_class: AssetClass, cfg: StrategyConfig) 
     return is_in_session_windows(ts, windows)
 
 
-def _vol_ok(df_15m: pd.DataFrame, asof: int, cfg: StrategyConfig) -> bool:
-    """Kept for optional re-enable; not used as a hard gate."""
+def _vol_ratio(df_15m: pd.DataFrame, asof: int, cfg: StrategyConfig) -> float:
+    """ATR(now) / ATR(median lookback); NaN if unavailable."""
     period = cfg.atr_period
     w = int(cfg.get("volatility_filter", "W_vol", default=100))
-    vmin = float(cfg.get("volatility_filter", "V_min", default=0.5))
-    vmax = float(cfg.get("volatility_filter", "V_max", default=2.5))
     sub = df_15m.iloc[: asof + 1]
     atr_s = atr(sub, period)
     if asof < w or not np.isfinite(atr_s.iloc[asof]):
-        return False
+        return float("nan")
     atr_now = float(atr_s.iloc[asof])
     atr_ref = float(atr_s.iloc[asof - w : asof + 1].median())
     if atr_ref <= 0:
+        return float("nan")
+    return atr_now / atr_ref
+
+
+def _vol_ok(df_15m: pd.DataFrame, asof: int, cfg: StrategyConfig) -> bool:
+    """Kept for optional re-enable; not used as a hard gate alone."""
+    vmin = float(cfg.get("volatility_filter", "V_min", default=0.5))
+    vmax = float(cfg.get("volatility_filter", "V_max", default=2.5))
+    ratio = _vol_ratio(df_15m, asof, cfg)
+    if not np.isfinite(ratio):
         return False
-    ratio = atr_now / atr_ref
     return vmin <= ratio <= vmax
 
+
+def _is_high_vol(df_15m: pd.DataFrame, asof: int, cfg: StrategyConfig) -> bool:
+    """HIGH_VOL when vol ratio exceeds V_max."""
+    vmax = float(cfg.get("volatility_filter", "V_max", default=2.5))
+    ratio = _vol_ratio(df_15m, asof, cfg)
+    return bool(np.isfinite(ratio) and ratio > vmax)
 
 def _confirm_5m(
     df_5m: pd.DataFrame,
@@ -337,11 +354,11 @@ def evaluate(
     news_blackout: bool = False,
 ) -> SignalDecision:
     """
-    Deterministic evaluation at 5M close timestamp `ts` (V5 scoring-based).
+    Deterministic evaluation at 5M close timestamp `ts` (V6 quality gates).
     Uses only fully closed HTF bars with close_time <= ts.
     Hard blocks: data_quality, insufficient_bars, atr_invalid, no_directional_bias,
-    low_score. no_valid_poi / liquidity miss → fallback plan with score -1.
-    Confirm is optional (+1 only). A+ ≥ 2, A ≥ 1.
+    high_vol_range, fallback_rr (<2.0), confirm_rr (no confirm & RR<2.5), low_score.
+    Valid POI adds +1. A+ ≥ 3, A ≥ 2.
     """
     symbol = bundle.symbol
     asset_class = bundle.asset_class
@@ -441,6 +458,24 @@ def evaluate(
     if not np.isfinite(atr_v) or atr_v <= 0:
         return _no_trade(symbol, ts, "atr_invalid", ch)
 
+    # V6 regime filter: reject HIGH_VOL + RANGE
+    high_vol = _is_high_vol(bundle.m15.df, i15, cfg)
+    is_range = st4.bias in ("RANGE", "NEUTRAL") or st1.bias in ("RANGE", "NEUTRAL")
+    if high_vol and is_range:
+        return _no_trade(
+            symbol,
+            ts,
+            "high_vol_range",
+            ch,
+            meta={
+                "bias_4h": st4.bias,
+                "bias_1h": st1.bias,
+                "high_vol": high_vol,
+                "is_range": is_range,
+                "vol_ratio": _vol_ratio(bundle.m15.df, i15, cfg),
+            },
+        )
+
     price = float(bundle.m5.df.iloc[i5]["close"])
     sweep_valid = False
     if sweep is not None:
@@ -517,7 +552,7 @@ def evaluate(
     else:
         pd_ok = pd_state.zone == "PREMIUM"
 
-    # Confirm is optional: scoring +1 only, never required for A/A+
+    # Confirm: +1 when True; when False allowed only if RR >= 2.5 (checked after plan)
     confirm_ok = _confirm_5m(
         bundle.m5.df,
         i5,
@@ -570,7 +605,7 @@ def evaluate(
         used_price_fallback = True
 
     if plan is None:
-        # V5: ATR geometric fallback — avoid total block when no liquidity TP
+        # ATR geometric fallback — avoid total block when no liquidity TP
         fallback_entry = float(price)
         if direction == "LONG":
             fallback_sl = float(price) - float(atr_v)
@@ -608,6 +643,27 @@ def evaluate(
     rr = float(plan.rr1)
     rr_ok = rr >= 1.5
     sweep_present = sweep_valid
+    has_valid_poi = bool(valid_pois)
+
+    # V6: control fallback abuse — require RR >= 2.0
+    if used_price_fallback and rr < RR_FALLBACK_MIN:
+        return _no_trade(
+            symbol,
+            ts,
+            "fallback_rr",
+            ch,
+            meta={"rr": rr, "fallback": True, "rr_min": RR_FALLBACK_MIN},
+        )
+
+    # V6: no confirm allowed only when RR >= 2.5
+    if (not confirm_ok) and rr < RR_NO_CONFIRM_MIN:
+        return _no_trade(
+            symbol,
+            ts,
+            "confirm_rr",
+            ch,
+            meta={"rr": rr, "confirm_ok": False, "rr_min": RR_NO_CONFIRM_MIN},
+        )
 
     score = 0
     if htf_aligned:
@@ -624,6 +680,9 @@ def evaluate(
         score += 1
     if sweep_present:
         score += 1
+    # V6: POI quality boost
+    if has_valid_poi:
+        score += 1
     if used_price_fallback:
         score -= 1
 
@@ -633,13 +692,15 @@ def evaluate(
             "score": score,
             "rr": rr,
             "fallback": used_price_fallback,
+            "confirm": confirm_ok,
+            "poi": has_valid_poi,
             "symbol": symbol,
         }
     )
 
-    if score >= 2:
+    if score >= 3:
         setup_type: Literal["A+", "A", "B"] = "A+"
-    elif score >= 1:
+    elif score >= 2:
         setup_type = "A"
     else:
         return _no_trade(symbol, ts, "low_score", ch)
@@ -680,6 +741,9 @@ def evaluate(
         "f_poi_count": float(len(valid_pois)),
         "f_structure_shift": float(structure_shift),
         "f_price_fallback": float(used_price_fallback),
+        "f_has_valid_poi": float(has_valid_poi),
+        "f_high_vol": float(high_vol),
+        "f_is_range": float(is_range),
     }
 
     validated = ["liquidity_tp"]
@@ -689,7 +753,11 @@ def evaluate(
         validated.append("poi_fvg_or_ob")
     else:
         validated.append("poi_price_fallback")
-    if rr >= 1.5:
+    if rr >= 2.5:
+        validated.append("rr_ge_2_5")
+    elif rr >= 2.0:
+        validated.append("rr_ge_2_0")
+    elif rr >= 1.5:
         validated.append("rr_ge_1_5")
     elif rr >= 1.2:
         validated.append("rr_ge_1_2")
@@ -697,6 +765,8 @@ def evaluate(
         validated.append("fvg_ob_overlap")
     if confirm_ok:
         validated.append("confirm_5m")
+    elif rr >= RR_NO_CONFIRM_MIN:
+        validated.append("confirm_waived_rr")
     if pd_ok:
         validated.append("premium_discount")
     if sweep_valid:
@@ -705,6 +775,8 @@ def evaluate(
         validated.append("htf_aligned")
     if session_ok:
         validated.append("session_ok")
+    if has_valid_poi:
+        validated.append("valid_poi")
 
     flags = {
         "LiquiditySweep": sweep_valid,
@@ -762,10 +834,15 @@ def evaluate(
             "structure_shift": structure_shift,
             "poi_price_fallback": used_price_fallback,
             "poi_count": len(valid_pois),
+            "has_valid_poi": has_valid_poi,
             "rr": rr,
             "rr_score_target": RR_SCORE_TARGET,
+            "rr_fallback_min": RR_FALLBACK_MIN,
+            "rr_no_confirm_min": RR_NO_CONFIRM_MIN,
+            "high_vol": high_vol,
+            "is_range": is_range,
             "session_ok": session_ok,
             "news_blocked": news_blocked,
-            "strategy_version": "V5",
+            "strategy_version": "V6",
         },
     )
