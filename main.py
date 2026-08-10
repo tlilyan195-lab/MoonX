@@ -183,7 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument(
         "--include-oos",
         action="store_true",
-        help="Include out-of-sample evaluation",
+        help="Include OOS results in split backtests",
     )
     b.add_argument("--config", default="config/strategy_v1.yaml")
     b.set_defaults(func=cmd_backtest)
