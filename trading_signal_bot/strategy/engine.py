@@ -717,6 +717,17 @@ def evaluate(
     decision_type: Literal["SIGNAL_LONG", "SIGNAL_SHORT"] = (
         "SIGNAL_LONG" if direction == "LONG" else "SIGNAL_SHORT"
     )
+    # Deduper keys on (symbol, direction, sweep_id, sweep_time).
+    # Bucket identity so distinct entries are not collapsed into one trade,
+    # while still suppressing true same-bar spam within a 15M window.
+    bucket_ts = pd.Timestamp(ts).floor("15min")
+    if sweep is not None:
+        dedupe_sweep_id = f"{sweep.level.level_id}:{selected.poi_id}:{bucket_ts.isoformat()}"
+        dedupe_sweep_time = str(bucket_ts)
+    else:
+        dedupe_sweep_id = f"NOSWEEP:{selected.poi_id}:{bucket_ts.isoformat()}"
+        dedupe_sweep_time = str(bucket_ts)
+
     return SignalDecision(
         decision=decision_type,
         symbol=symbol,
@@ -734,12 +745,13 @@ def evaluate(
         bias_1h=st1.bias,
         conditions_validated=validated,
         explanation=explanation_from_flags(flags),
-        sweep_id=(sweep.level.level_id if sweep is not None else ""),
+        sweep_id=dedupe_sweep_id,
         poi_id=selected.poi_id,
         config_hash=ch,
         features=features,
         meta={
-            "sweep_time": str(sweep.ts) if sweep is not None else None,
+            "sweep_time": dedupe_sweep_time,
+            "sweep_level_id": (sweep.level.level_id if sweep is not None else None),
             "poi_type": selected.poi_type,
             "poi_mid": _poi_mid(selected),
             "fvg_mitigation_mode": mit_mode,
