@@ -1,12 +1,10 @@
 """Strategy engine: deterministic evaluate() -> SIGNAL_LONG | SIGNAL_SHORT | NO_TRADE.
 
-DEBUG MODE: massively increase trade count to test edge.
-- POI not hard-required; fallback risk plan from raw price when no POI
-- _confirm_5m always True
-- Scoring kept for meta/debug but does not block trades
-- RR is scoring-only (no hard rr_min NO_TRADE); E2 no synthetic TP retained
-- Hard NO_TRADE only: data_quality, no_directional_bias, atr_invalid (+ E2 / insufficient bars)
-- Anti look-ahead and risk plan logic retained
+DEBUG MODE: high signal frequency, fully deterministic (no randomness).
+- Soft only: sweep, POI, confirm, PD, RR, score, session, news, structure
+- Hard NO_TRADE: data_quality, insufficient_bars, atr_invalid, no_directional_bias, E2
+- POI optional with price-anchor fallback; confirm relaxed (10 bars / theta_body 0.3)
+- Anti look-ahead retained; no synthetic TP (E2)
 """
 
 from __future__ import annotations
@@ -106,9 +104,34 @@ def _confirm_5m(
     n_pivot: int,
     theta_body: float,
     atr_period: int,
+    max_bars_ago: int = 10,
 ) -> bool:
-    """DEBUG MODE: confirmation disabled — always True."""
-    return True
+    """
+    Soft 5M confirmation (scoring only — never hard-blocks evaluate).
+    Relaxed DEBUG defaults: max_bars_ago=10, callers typically pass theta_body=0.3.
+    Uses closed bars only via asof_index (anti look-ahead).
+    """
+    st = compute_structure(
+        df_5m.iloc[: asof_5m + 1],
+        n_pivot=n_pivot,
+        atr_period=atr_period,
+        theta_body=theta_body,
+        theta_disp=0.0,
+        asof_index=asof_5m,
+    )
+    if not st.events:
+        return False
+    last = st.events[-1]
+    if asof_5m - last.index > max_bars_ago:
+        return False
+    if direction == "LONG" and not last.event_type.value.endswith("BULL"):
+        return False
+    if direction == "SHORT" and not last.event_type.value.endswith("BEAR"):
+        return False
+    row = df_5m.iloc[last.index]
+    rng = float(row["high"] - row["low"])
+    body = abs(float(row["close"] - row["open"]))
+    return rng > 0 and (body / rng) >= theta_body
 
 
 def _debug_risk_cfg(cfg: StrategyConfig) -> dict:
@@ -244,9 +267,8 @@ def evaluate(
     Deterministic evaluation at 5M close timestamp `ts`.
     Uses only fully closed HTF bars with close_time <= ts.
 
-    DEBUG MODE: POI optional; confirm always on; score/RR do not block;
-    hard NO_TRADE only for data_quality / no_directional_bias / atr_invalid
-    (plus E2 no synthetic TP, and insufficient_bars when indices missing).
+    DEBUG MODE: soft sweep/POI/confirm/PD/RR/score; hard NO_TRADE only for
+    data_quality / insufficient_bars / atr_invalid / no_directional_bias / E2.
     """
     symbol = bundle.symbol
     asset_class = bundle.asset_class
@@ -407,7 +429,16 @@ def evaluate(
         if intersected:
             valid_pois.append(poi)
 
-    # DEBUG MODE: no hard NO_TRADE on empty valid_pois — fall back to price-anchored plan
+    # Soft: empty POI list is diagnostic only — evaluation continues with price fallback
+    if not valid_pois:
+        print(
+            {
+                "diag": "no_valid_poi",
+                "ts": str(ts),
+                "symbol": symbol,
+                "direction": direction,
+            }
+        )
 
     pd_state = premium_discount(
         bundle.h1.df,
@@ -423,14 +454,15 @@ def evaluate(
     else:
         pd_ok = pd_state.zone == "PREMIUM"
 
-    # Soft signal: 5M confirmation (DEBUG: always True via _confirm_5m)
+    # Soft signal: 5M confirmation (relaxed; scoring only — never hard-blocks)
     confirm_ok = _confirm_5m(
         bundle.m5.df,
         i5,
         direction,
         n5,
-        float(cfg.get("confirmation", "theta_body_5m", default=0.5)),
+        0.3,  # relaxed theta_body
         atr_period,
+        max_bars_ago=10,
     )
 
     # Soft signal: HTF alignment (already not a hard block)
@@ -480,18 +512,13 @@ def evaluate(
         )
         used_price_fallback = True
 
-    if plan is None:
-        return _no_trade(symbol, ts, "no_liquidity_tp", ch)  # E2 — no synthetic TP
-
-    # RR is scoring-only (DEBUG MODE) — config rr_min never hard-blocks
+    # RR / overlap scoring features (soft — never hard-block)
     rr_min = float(cfg.rr_min)
-    rr_ok = float(plan.rr1) >= rr_min
-
-    # P1 overlap on *selected* POI only (0 when price-fallback)
+    rr_ok = bool(plan is not None and float(plan.rr1) >= rr_min)
     overlap_theta = float(cfg.get("scoring", "overlap_theta", default=0.25))
     selected_overlap = (
         0.0
-        if used_price_fallback
+        if (used_price_fallback or selected is None or not valid_pois)
         else _poi_overlap_score(selected, valid_pois, overlap_theta)
     )
 
@@ -513,24 +540,7 @@ def evaluate(
         else:
             ote_flag = 1.0 if in_ote(pd_state.pos) else 0.0
 
-    features = {
-        "f_overlap_fvg_ob": float(selected_overlap >= overlap_theta),
-        "f_deep_pd": deep,
-        "f_ote": ote_flag,
-        "f_maj_liq": 1.0 if (sweep is not None and sweep.level.major) else 0.0,
-        "f_mtf_fvg": 0.0,
-        "f_disp": 1.0 if any(e.displacement_ok for e in st15.events[-3:]) else 0.0,
-        "f_rr": min(plan.rr1 / 3.0, 1.0),
-        "f_rr_ok": float(rr_ok),
-        "f_htf_aligned": float(htf_aligned),
-        "f_sweep_present": float(sweep_present),
-        "f_pd_ok": float(pd_ok),
-        "f_confirm_ok": float(confirm_ok),
-        "f_session_ok": float(session_ok),
-        "f_news_blocked": float(news_blocked),
-    }
-
-    # Discrete setup score (kept for meta/debug — does NOT block trades)
+    # Discrete setup score (does NOT block trades)
     score = 0
     if selected_overlap >= overlap_theta:
         score += 2
@@ -541,26 +551,45 @@ def evaluate(
     if sweep_present:
         score += 1
     if rr_ok:
-        score += 2  # RR as scoring feature only
+        score += 2
+
+    print(
+        {
+            "ts": ts,
+            "score": score,
+            "rr": float(plan.rr1) if plan else None,
+            "sweep": sweep_present,
+            "confirm": confirm_ok,
+            "pd": pd_ok,
+            "poi_count": len(valid_pois),
+        }
+    )
+
+    if plan is None or selected is None:
+        return _no_trade(symbol, ts, "no_liquidity_tp", ch)  # E2 — no synthetic TP
 
     if score >= 5:
         setup_type: Literal["A+", "A"] = "A+"
     else:
-        # DEBUG MODE: never block on score; label A even when score < 2
         setup_type = "A"
 
-    print(
-        {
-            "score": score,
-            "setup": setup_type,
-            "rr": float(plan.rr1),
-            "rr_ok": rr_ok,
-            "sweep": sweep_present,
-            "confirm": confirm_ok,
-            "pd": pd_ok,
-            "poi_fallback": used_price_fallback,
-        }
-    )
+    features = {
+        "f_overlap_fvg_ob": float(selected_overlap >= overlap_theta),
+        "f_deep_pd": deep,
+        "f_ote": ote_flag,
+        "f_maj_liq": 1.0 if (sweep is not None and sweep.level.major) else 0.0,
+        "f_mtf_fvg": 0.0,
+        "f_disp": 1.0 if any(e.displacement_ok for e in st15.events[-3:]) else 0.0,
+        "f_rr": min(float(plan.rr1) / 3.0, 1.0),
+        "f_rr_ok": float(rr_ok),
+        "f_htf_aligned": float(htf_aligned),
+        "f_sweep_present": float(sweep_present),
+        "f_pd_ok": float(pd_ok),
+        "f_confirm_ok": float(confirm_ok),
+        "f_session_ok": float(session_ok),
+        "f_news_blocked": float(news_blocked),
+        "f_poi_count": float(len(valid_pois)),
+    }
 
     validated = ["liquidity_tp"]
     if rr_ok:
@@ -639,6 +668,7 @@ def evaluate(
             "confirm_ok": confirm_ok,
             "structure_shift": structure_shift,
             "poi_price_fallback": used_price_fallback,
+            "poi_count": len(valid_pois),
             "rr_ok": rr_ok,
             "rr_min": rr_min,
             "session_ok": session_ok,
