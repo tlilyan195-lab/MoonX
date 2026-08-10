@@ -114,7 +114,7 @@ def _confirm_5m(
         return False
     last = st.events[-1]
     # Event must be recent enough relative to evaluation bar
-    if asof_5m - last.index > 2:
+    if asof_5m - last.index > 5:
         return False
     if direction == "LONG" and not last.event_type.value.endswith("BULL"):
         return False
@@ -246,8 +246,9 @@ def evaluate(
         return _no_trade(symbol, ts, "news_blackout", ch)
     if not _session_ok(ts, asset_class, cfg):
         return _no_trade(symbol, ts, "session_filter", ch)
-    if not _vol_ok(bundle.m15.df, i15, cfg):
-        return _no_trade(symbol, ts, "volatility_filter", ch)
+    # Volatility filter disabled (soften trade frequency); keep helper for later re-enable.
+    # if not _vol_ok(bundle.m15.df, i15, cfg):
+    #     return _no_trade(symbol, ts, "volatility_filter", ch)
 
     n4 = int(cfg.get("pivots", "N_4H", default=2))
     n1 = int(cfg.get("pivots", "N_1H", default=2))
@@ -512,9 +513,17 @@ def evaluate(
             },
         )
 
-    print({"score": score, "setup": setup_type})
+    print(
+        {
+            "score": score,
+            "setup": setup_type,
+            "rr": float(plan.rr1),
+            "pd_ok": pd_ok,
+            "confirm": confirm_ok,
+        }
+    )
 
-    validated = ["structure_shift", "poi_fvg_or_ob", "rr_min", "session_vol_ok"]
+    validated = ["structure_shift", "poi_fvg_or_ob", "rr_min", "session_ok"]
     if selected_overlap >= overlap_theta:
         validated.append("fvg_ob_overlap")
     if confirm_ok:
