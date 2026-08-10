@@ -41,6 +41,7 @@ def _bundle_from_synthetic(symbol: str, n_5m: int, seed: int) -> MultiTimeframeB
 def cmd_backtest(args: argparse.Namespace) -> int:
     cfg = StrategyConfig.from_yaml(args.config)
     include_oos = bool(getattr(args, "include_oos", False))
+    print("INCLUDE OOS:", include_oos)
     symbols = [
         s.strip()
         for s in str(getattr(args, "symbols", "") or args.symbol).split(",")
@@ -53,7 +54,11 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     for symbol in symbols:
         bundle = _bundle_from_synthetic(symbol, args.bars, args.seed)
         if args.splits:
-            results = run_split_backtests(bundle, cfg, include_oos=include_oos)
+            results = run_split_backtests(
+                bundle,
+                cfg,
+                include_oos=args.include_oos,
+            )
             payload = {
                 name: {
                     "metrics": res.metrics.to_dict(),
@@ -64,7 +69,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
                 }
                 for name, res in results.items()
             }
-            payload["includes_oos_metrics"] = include_oos and ("OOS" in results)
+            payload["includes_oos_metrics"] = bool(args.include_oos) and ("OOS" in results)
         else:
             res = run_backtest_on_bundle(bundle, cfg)
             payload = {
@@ -145,6 +150,24 @@ def build_parser() -> argparse.ArgumentParser:
         default="backtest",
     )
     p.add_argument("--config", default="config/strategy_v1.yaml")
+    p.add_argument(
+        "--include-oos",
+        action="store_true",
+        help="Include out-of-sample evaluation in backtest",
+    )
+    p.add_argument(
+        "--splits",
+        action="store_true",
+        help="Run TRAIN/VAL(/OOS) calibration splits (used with --mode backtest)",
+    )
+    p.add_argument("--symbol", default="EURUSD")
+    p.add_argument(
+        "--symbols",
+        default="",
+        help="Comma-separated symbols (overrides --symbol)",
+    )
+    p.add_argument("--bars", type=int, default=3000)
+    p.add_argument("--seed", type=int, default=42)
     sub = p.add_subparsers(dest="command")
 
     b = sub.add_parser("backtest", help="Run backtest engine (ÉTAPE 4)")
@@ -165,8 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument(
         "--include-oos",
         action="store_true",
-        help="Include OOS split metrics when using --splits "
-        "(explicit opt-in; default remains TRAIN/VAL only)",
+        help="Include out-of-sample evaluation",
     )
     b.add_argument("--config", default="config/strategy_v1.yaml")
     b.set_defaults(func=cmd_backtest)
@@ -203,12 +225,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.mode == "backtest":
             return cmd_backtest(
                 argparse.Namespace(
-                    symbol="EURUSD",
-                    symbols="XAUUSD,EURUSD,GBPUSD,USDJPY",
-                    bars=3000,
-                    seed=42,
-                    splits=False,
-                    include_oos=False,
+                    symbol=args.symbol,
+                    symbols=args.symbols or args.symbol,
+                    bars=args.bars,
+                    seed=args.seed,
+                    splits=bool(args.splits),
+                    include_oos=bool(args.include_oos),
                     config=args.config,
                 )
             )
