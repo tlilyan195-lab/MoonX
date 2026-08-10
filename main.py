@@ -24,8 +24,6 @@ from trading_signal_bot.config import StrategyConfig  # noqa: E402
 from trading_signal_bot.data import MultiTimeframeBundle  # noqa: E402
 from trading_signal_bot.data.providers import make_mtf_synthetic  # noqa: E402
 
-print("RUNNING FILE:", __file__)
-
 
 def _bundle_from_synthetic(symbol: str, n_5m: int, seed: int) -> MultiTimeframeBundle:
     frames = make_mtf_synthetic(symbol, n_5m=n_5m, seed=seed)
@@ -146,8 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Trading Signal Bot (signals-only). Never places orders."
     )
-    p.add_argument("--config", default="config/strategy_v1.yaml")
-    sub = p.add_subparsers(dest="command")
+    sub = p.add_subparsers(dest="command", required=True)
 
     b = sub.add_parser("backtest", help="Run backtest engine (ÉTAPE 4)")
     b.add_argument("--symbol", default="EURUSD")
@@ -194,16 +191,12 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--config", default="config/strategy_v1.yaml")
     w.set_defaults(func=cmd_walk_forward)
 
-    print("PARSER BUILT FROM:", __file__)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command is None:
-        parser.print_help()
-        return 1
     return int(args.func(args))
 
 
