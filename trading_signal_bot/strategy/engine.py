@@ -27,7 +27,7 @@ from trading_signal_bot.strategy.poi import (
     is_ob_invalidated,
 )
 from trading_signal_bot.strategy.premium_discount import in_ote, premium_discount
-from trading_signal_bot.strategy.scoring import compute_score, explanation_from_flags
+from trading_signal_bot.strategy.scoring import explanation_from_flags
 
 
 def _asof_index(df: pd.DataFrame, ts: pd.Timestamp) -> int | None:
@@ -302,7 +302,7 @@ def evaluate(
         asof_1h=i1,
     )
 
-    # Find recent sweep on 15M within X bars
+    # Soft signal: liquidity sweep (no hard NO_TRADE)
     x_max = int(cfg.get("confirmation", "X_max_bars_15m_after_sweep", default=6))
     sweep = None
     start_i = max(0, i15 - x_max)
@@ -317,21 +317,20 @@ def evaluate(
                 break
         if sweep is not None:
             break
-    if sweep is None:
-        return _no_trade(symbol, ts, "no_liquidity_sweep", ch)
-
-    bars_since = i15 - sweep.index
-    if bars_since > x_max:
-        return _no_trade(symbol, ts, "sweep_expired", ch)
 
     atr_15 = atr(bundle.m15.df.iloc[: i15 + 1], atr_period)
     atr_v = float(atr_15.iloc[i15])
     if not np.isfinite(atr_v) or atr_v <= 0:
         return _no_trade(symbol, ts, "atr_invalid", ch)
 
-    dist = abs(float(bundle.m5.df.iloc[i5]["close"]) - sweep.extreme) / atr_v
-    if dist > float(cfg.get("liquidity", "D_max_atr", default=2.0)):
-        return _no_trade(symbol, ts, "sweep_entry_distance", ch)
+    sweep_present = False
+    if sweep is not None:
+        bars_since = i15 - sweep.index
+        dist = abs(float(bundle.m5.df.iloc[i5]["close"]) - sweep.extreme) / atr_v
+        if bars_since <= x_max and dist <= float(cfg.get("liquidity", "D_max_atr", default=2.0)):
+            sweep_present = True
+        else:
+            sweep = None  # expired / too far → treat as absent for scoring + SL ref
 
     mit_mode = cfg.fvg_mitigation_mode
     fvgs = detect_fvgs(
@@ -355,11 +354,12 @@ def evaluate(
     )
 
     want_dir = "BULL" if direction == "LONG" else "BEAR"
+    poi_window_start = sweep.index if sweep is not None else max(0, i15 - x_max)
     valid_pois: list[POI] = []
     for poi in fvgs + obs:
         if poi.direction != want_dir:
             continue
-        if poi.created_index < sweep.index:
+        if sweep is not None and poi.created_index < sweep.index:
             # Prefer POIs formed after/during reaction; allow OB slightly before if still unmitigated
             if poi.poi_type == "FVG":
                 continue
@@ -369,9 +369,9 @@ def evaluate(
             continue
         if poi.poi_type == "OB" and is_ob_invalidated(poi, bundle.m15.df, poi.created_index, i15):
             continue
-        # Price must intersect POI on recent 15M bar(s) since sweep
+        # Price must intersect POI on recent 15M bar(s)
         intersected = False
-        for k in range(sweep.index, i15 + 1):
+        for k in range(poi_window_start, i15 + 1):
             if bar_intersects_poi(bundle.m15.df.iloc[k], poi):
                 intersected = True
                 break
@@ -389,48 +389,61 @@ def evaluate(
         premium_min=float(cfg.get("premium_discount", "premium_min", default=0.55)),
         price=float(bundle.m5.df.iloc[i5]["close"]),
     )
-    if direction == "LONG" and pd_state.zone != "DISCOUNT":
-        return _no_trade(symbol, ts, "not_in_discount", ch, meta={"pd": pd_state.zone})
-    if direction == "SHORT" and pd_state.zone != "PREMIUM":
-        return _no_trade(symbol, ts, "not_in_premium", ch, meta={"pd": pd_state.zone})
+    # Soft signal: premium/discount (no hard NO_TRADE)
+    if direction == "LONG":
+        pd_ok = pd_state.zone == "DISCOUNT"
+    else:
+        pd_ok = pd_state.zone == "PREMIUM"
 
-    if not _confirm_5m(
+    # Soft signal: 5M confirmation (no hard NO_TRADE)
+    confirm_ok = _confirm_5m(
         bundle.m5.df,
         i5,
         direction,
         n5,
         float(cfg.get("confirmation", "theta_body_5m", default=0.5)),
         atr_period,
-    ):
-        return _no_trade(symbol, ts, "no_5m_confirmation", ch)
+    )
+
+    # Soft signal: HTF alignment (already not a hard block)
+    htf_aligned = bool(biases_aligned(st4.bias, st1.bias))
 
     raw_entry = float(bundle.m5.df.iloc[i5]["close"])
+    # SL reference: sweep extreme when present, else last swing / ATR fallback (still POI-aware in risk)
+    if sweep is not None:
+        sl_ref = float(sweep.extreme)
+    elif direction == "LONG":
+        sl_ref = float(st1.last_swing_low) if st1.last_swing_low is not None else raw_entry - atr_v
+    else:
+        sl_ref = float(st1.last_swing_high) if st1.last_swing_high is not None else raw_entry + atr_v
+
     mode = str(cfg.get("meta", "poi_selection_mode", default="best_rr_then_recency"))
     selected, plan = _select_poi(
         valid_pois,
         mode,
         direction,
         raw_entry,
-        sweep.extreme,
+        sl_ref,
         levels,
         atr_v,
         asset_class,
         cfg,
     )
     if selected is None or plan is None:
-        return _no_trade(symbol, ts, "no_liquidity_tp_or_rr", ch)  # E2
+        return _no_trade(symbol, ts, "no_liquidity_tp_or_rr", ch)  # E2 — no synthetic TP
 
-    # Keep RR filter (no fake TP)
-    if float(plan.rr1) < float(cfg.rr_min):
+    # Keep RR hard filter (no fake TP / under-min RR)
+    rr_min = float(cfg.rr_min)
+    if float(plan.rr1) < rr_min:
         return _no_trade(
             symbol,
             ts,
             "rr_below_min",
             ch,
-            meta={"rr": float(plan.rr1), "rr_min": float(cfg.rr_min)},
+            meta={"rr": float(plan.rr1), "rr_min": rr_min},
         )
 
-    # P1 A+: overlap must involve the *selected* POI, not unrelated POI pairs
+    # P1 overlap on *selected* POI only
     overlap_theta = float(cfg.get("scoring", "overlap_theta", default=0.25))
     selected_overlap = _poi_overlap_score(selected, valid_pois, overlap_theta)
 
@@ -456,58 +469,72 @@ def evaluate(
         "f_overlap_fvg_ob": float(selected_overlap >= overlap_theta),
         "f_deep_pd": deep,
         "f_ote": ote_flag,
-        "f_maj_liq": 1.0 if sweep.level.major else 0.0,
+        "f_maj_liq": 1.0 if (sweep is not None and sweep.level.major) else 0.0,
         "f_mtf_fvg": 0.0,
         "f_disp": 1.0 if any(e.displacement_ok for e in st15.events[-3:]) else 0.0,
         "f_rr": min(plan.rr1 / 3.0, 1.0),
+        "f_htf_aligned": float(htf_aligned),
+        "f_sweep_present": float(sweep_present),
+        "f_pd_ok": float(pd_ok),
+        "f_confirm_ok": float(confirm_ok),
     }
-    weights = cfg.get("scoring", "weights", default={}) or {}
-    breakdown = compute_score(
-        features,
-        weights,
-        s_b=float(cfg.get("scoring", "S_B", default=55)),
-        s_a=float(cfg.get("scoring", "S_A", default=70)),
-        s_aplus=float(cfg.get("scoring", "S_Aplus", default=85)),
-        require_overlap_for_aplus=cfg.require_overlap_for_aplus,
-    )
 
-    # Category from structural gates (not score thresholds alone).
-    # A+ keeps FVG+OB overlap requirement; A allows FVG or OB.
-    has_fvg = any(p.poi_type == "FVG" for p in valid_pois)
-    has_ob = any(p.poi_type == "OB" for p in valid_pois)
-    fvg_ob_overlap = bool(selected_overlap >= overlap_theta)
-    liquidity_sweep = True  # sweep already required above
-    # structure_shift already enforced earlier; keep explicit for category rule
-    is_aplus = fvg_ob_overlap and liquidity_sweep and structure_shift
-    is_a = (has_fvg or has_ob) and liquidity_sweep and structure_shift
-    if is_aplus:
+    # Discrete setup score (soft former hard-gates)
+    score = 0
+    if selected_overlap >= overlap_theta:
+        score += 2
+    if confirm_ok:
+        score += 2
+    if pd_ok:
+        score += 1
+    if sweep_present:
+        score += 1
+    if float(plan.rr1) >= rr_min:
+        score += 2
+
+    if score >= 5:
         setup_type: Literal["A+", "A"] = "A+"
-    elif is_a:
+    elif score >= 3:
         setup_type = "A"
     else:
-        return _no_trade(symbol, ts, "setup_not_a_or_aplus", ch)
+        return _no_trade(
+            symbol,
+            ts,
+            "score_below_A",
+            ch,
+            meta={
+                "score": score,
+                "htf_aligned": htf_aligned,
+                "sweep_present": sweep_present,
+                "pd_ok": pd_ok,
+                "confirm_ok": confirm_ok,
+                "rr": float(plan.rr1),
+            },
+        )
 
-    print({"setup": setup_type, "rr": float(plan.rr1)})
+    print({"score": score, "setup": setup_type})
 
-    validated = [
-        "structure_shift",
-        "liquidity_sweep",
-        "poi_fvg_or_ob",
-        "confirm_5m",
-        "rr_min",
-        "session_vol_ok",
-        "premium_discount",
-    ]
-    if fvg_ob_overlap:
+    validated = ["structure_shift", "poi_fvg_or_ob", "rr_min", "session_vol_ok"]
+    if selected_overlap >= overlap_theta:
         validated.append("fvg_ob_overlap")
+    if confirm_ok:
+        validated.append("confirm_5m")
+    if pd_ok:
+        validated.append("premium_discount")
+    if sweep_present:
+        validated.append("liquidity_sweep")
+    if htf_aligned:
+        validated.append("htf_aligned")
+
     flags = {
-        "LiquiditySweep": True,
+        "LiquiditySweep": sweep_present,
         "POI": True,
-        "Confirm5M": True,
-        "StructureShift": True,
-        "HTFAlignment": bool(biases_aligned(st4.bias, st1.bias)),
-        "OverlapFVGOB": fvg_ob_overlap,
-        "MajorLiquidity": bool(sweep.level.major),
+        "Confirm5M": confirm_ok,
+        "StructureShift": structure_shift,
+        "HTFAlignment": htf_aligned,
+        "PremiumDiscount": pd_ok,
+        "OverlapFVGOB": selected_overlap >= overlap_theta,
+        "MajorLiquidity": bool(sweep is not None and sweep.level.major),
     }
 
     decision_type: Literal["SIGNAL_LONG", "SIGNAL_SHORT"] = (
@@ -519,7 +546,7 @@ def evaluate(
         ts_utc=ts,
         direction=direction,
         category=setup_type,
-        setup_score=breakdown.score,
+        setup_score=float(score),
         entry=plan.entry,
         sl=plan.sl,
         tp1=plan.tp1,
@@ -530,12 +557,12 @@ def evaluate(
         bias_1h=st1.bias,
         conditions_validated=validated,
         explanation=explanation_from_flags(flags),
-        sweep_id=sweep.level.level_id,
+        sweep_id=(sweep.level.level_id if sweep is not None else ""),
         poi_id=selected.poi_id,
         config_hash=ch,
         features=features,
         meta={
-            "sweep_time": str(sweep.ts),
+            "sweep_time": str(sweep.ts) if sweep is not None else None,
             "poi_type": selected.poi_type,
             "fvg_mitigation_mode": mit_mode,
             "poi_selection_mode": mode,
@@ -547,9 +574,11 @@ def evaluate(
             "selected_poi_overlap": selected_overlap,
             "confirm_5m_event_index": None,
             "setup_type": setup_type,
-            "htf_bias_aligned": bool(biases_aligned(st4.bias, st1.bias)),
-            "has_fvg": has_fvg,
-            "has_ob": has_ob,
+            "score": score,
+            "htf_aligned": htf_aligned,
+            "sweep_present": sweep_present,
+            "pd_ok": pd_ok,
+            "confirm_ok": confirm_ok,
             "structure_shift": structure_shift,
         },
     )
