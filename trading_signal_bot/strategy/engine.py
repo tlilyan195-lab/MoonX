@@ -403,9 +403,6 @@ def evaluate(
 
     htf_aligned = bool(biases_aligned(st4.bias, st1.bias))
 
-    if not (htf_aligned and structure_shift):
-        return _no_trade(symbol, ts, "no_htf_structure_alignment", ch)
-
     levels = build_liquidity_levels(
         bundle.m15.df,
         bundle.h1.df,
@@ -568,14 +565,8 @@ def evaluate(
         )
         used_price_fallback = True
 
-    if used_price_fallback:
-        return _no_trade(symbol, ts, "no_real_poi", ch)
-
     if plan is None:
         return _no_trade(symbol, ts, "no_liquidity_tp", ch)
-
-    if float(plan.rr1) < 1.5:
-        return _no_trade(symbol, ts, "rr_too_low", ch)
 
     overlap_theta = float(cfg.get("scoring", "overlap_theta", default=0.25))
     selected_overlap = (
@@ -585,13 +576,14 @@ def evaluate(
     )
 
     rr = float(plan.rr1)
+    rr_ok = rr >= 1.5
 
-    # V3 score (primary filter)
+    # Score (soft HTF/structure/RR/fallback — hard filters listed separately)
     score = 0
-    if structure_shift:
+    if htf_aligned:
         score += 2
-    else:
-        score -= 1
+    if structure_shift:
+        score += 1
     if confirm_ok:
         score += 1
     if pd_ok:
@@ -600,7 +592,7 @@ def evaluate(
         score += 1
     if rr >= 1.5:
         score += 2
-    elif rr >= 1.2:
+    elif rr >= 1.0:
         score += 1
     else:
         score -= 1
@@ -622,15 +614,12 @@ def evaluate(
         }
     )
 
-    if score < 3:
-        return _no_trade(symbol, ts, "low_score", ch)
-
-    if score >= 5:
+    if score >= 4:
         setup_type: Literal["A+", "A", "B"] = "A+"
-    elif score >= 3:
+    elif score >= 2:
         setup_type = "A"
     else:
-        setup_type = "B"
+        return _no_trade(symbol, ts, "low_score", ch)
 
     deep = 0.0
     if pd_state.pos is not None:
