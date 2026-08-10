@@ -146,11 +146,6 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Trading Signal Bot (signals-only). Never places orders."
     )
-    p.add_argument(
-        "--mode",
-        choices=["backtest", "calibrate", "oos_eval", "paper", "live_signals"],
-        default="backtest",
-    )
     p.add_argument("--config", default="config/strategy_v1.yaml")
     sub = p.add_subparsers(dest="command")
 
@@ -207,43 +202,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command is None:
-        if args.mode == "backtest":
-            return cmd_backtest(
-                argparse.Namespace(
-                    symbol="EURUSD",
-                    symbols="EURUSD",
-                    bars=3000,
-                    seed=42,
-                    splits=False,
-                    include_oos=bool(getattr(args, "include_oos", False)),
-                    config=args.config,
-                )
-            )
-        if args.mode == "calibrate":
-            return cmd_calibrate(
-                argparse.Namespace(
-                    symbol="EURUSD",
-                    bars=3000,
-                    seed=42,
-                    config=args.config,
-                    locked_out="config/strategy_v1_locked.yaml",
-                )
-            )
-        if args.mode == "oos_eval":
-            return cmd_oos_eval(
-                argparse.Namespace(
-                    symbol="EURUSD",
-                    bars=3000,
-                    seed=42,
-                    locked_config="config/strategy_v1_locked.yaml",
-                )
-            )
         parser.print_help()
-        print(
-            "\nNote: paper/live/notifications not enabled in ÉTAPE 4 "
-            "(backtest engine only). Use calibrate then oos-eval for isolation."
-        )
-        return 0
+        return 1
     return int(args.func(args))
 
 
