@@ -1,10 +1,9 @@
 """Strategy engine: deterministic evaluate() -> SIGNAL_LONG | SIGNAL_SHORT | NO_TRADE.
 
 Hard NO_TRADE only:
-  data_quality, insufficient_bars, atr_invalid, no_directional_bias, no_liquidity_tp (E2)
+  data_quality, insufficient_bars, atr_invalid, no_directional_bias, low_score
 
-Soft (scoring only): sweep, 5M confirm, premium/discount, RR>=1.5, POI overlap.
-Entry prefers POI midpoint-or-better; SL = POI edge ± ATR buffer; TPs liquidity-only.
+Soft scoring: HTF, structure, confirm, PD, sweep, RR tiers, price/ATR fallback.
 Anti look-ahead via closed-bar asof indices. No randomness.
 """
 
