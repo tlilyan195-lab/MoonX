@@ -403,6 +403,9 @@ def evaluate(
 
     htf_aligned = bool(biases_aligned(st4.bias, st1.bias))
 
+    if not (htf_aligned and structure_shift):
+        return _no_trade(symbol, ts, "no_htf_structure_alignment", ch)
+
     levels = build_liquidity_levels(
         bundle.m15.df,
         bundle.h1.df,
@@ -565,9 +568,14 @@ def evaluate(
         )
         used_price_fallback = True
 
-    # E2 — liquidity TP only (no synthetic TP)
-    if plan is None or selected is None:
+    if used_price_fallback:
+        return _no_trade(symbol, ts, "no_real_poi", ch)
+
+    if plan is None:
         return _no_trade(symbol, ts, "no_liquidity_tp", ch)
+
+    if float(plan.rr1) < 1.5:
+        return _no_trade(symbol, ts, "rr_too_low", ch)
 
     overlap_theta = float(cfg.get("scoring", "overlap_theta", default=0.25))
     selected_overlap = (
@@ -613,6 +621,9 @@ def evaluate(
             "fallback": used_price_fallback,
         }
     )
+
+    if score < 3:
+        return _no_trade(symbol, ts, "low_score", ch)
 
     if score >= 5:
         setup_type: Literal["A+", "A", "B"] = "A+"
