@@ -336,8 +336,10 @@ def evaluate(
     news_blackout: bool = False,
 ) -> SignalDecision:
     """
-    Deterministic evaluation at 5M close timestamp `ts`.
+    Deterministic evaluation at 5M close timestamp `ts` (V3 scoring-based).
     Uses only fully closed HTF bars with close_time <= ts.
+    Hard blocks: data_quality, insufficient_bars, atr_invalid, no_directional_bias,
+    no_structure_shift, no_liquidity_tp (E2). Score is the primary trade filter.
     """
     symbol = bundle.symbol
     asset_class = bundle.asset_class
@@ -381,13 +383,12 @@ def evaluate(
         bundle.h1.df, n1, atr_period, theta_body, theta_disp, asof_index=i1
     )
 
-    if st1.bias == "BULL":
+    # Softened HTF context: 1H bias with 4H same-side or RANGE/NEUTRAL
+    # (engine bias enum uses NEUTRAL for range-like state)
+    st4_soft = st4.bias in ("BULL", "BEAR", "RANGE", "NEUTRAL")
+    if st1.bias == "BULL" and st4.bias in ("BULL", "RANGE", "NEUTRAL"):
         direction: Literal["LONG", "SHORT"] = "LONG"
-    elif st1.bias == "BEAR":
-        direction = "SHORT"
-    elif st4.bias == "BULL":
-        direction = "LONG"
-    elif st4.bias == "BEAR":
+    elif st1.bias == "BEAR" and st4.bias in ("BEAR", "RANGE", "NEUTRAL"):
         direction = "SHORT"
     else:
         return _no_trade(
@@ -395,19 +396,14 @@ def evaluate(
             ts,
             "no_directional_bias",
             ch,
-            meta={"bias_4h": st4.bias, "bias_1h": st1.bias},
+            meta={"bias_4h": st4.bias, "bias_1h": st1.bias, "st4_soft": st4_soft},
         )
 
-    structure_shift = bool(st1.bos_count_in_bias >= 1) or any(
-        (direction == "LONG" and str(e.event_type.value).endswith("BULL"))
-        or (direction == "SHORT" and str(e.event_type.value).endswith("BEAR"))
-        for e in st1.events[-5:]
-    )
-    htf_aligned = bool(biases_aligned(st4.bias, st1.bias))
+    structure_shift = bool(st1.bos_count_in_bias >= 1)
+    if not structure_shift:
+        return _no_trade(symbol, ts, "no_structure_shift", ch)
 
-    # Hard filter: HTF bias alignment + structure shift
-    if not (htf_aligned and structure_shift):
-        return _no_trade(symbol, ts, "no_htf_structure_alignment", ch)
+    htf_aligned = bool(biases_aligned(st4.bias, st1.bias))
 
     levels = build_liquidity_levels(
         bundle.m15.df,
@@ -422,7 +418,7 @@ def evaluate(
         asof_1h=i1,
     )
 
-    # Soft: liquidity sweep
+    # Soft: liquidity sweep (never hard-blocks)
     x_max = int(cfg.get("confirmation", "X_max_bars_15m_after_sweep", default=6))
     sweep = None
     start_i = max(0, i15 - x_max)
@@ -446,16 +442,12 @@ def evaluate(
         return _no_trade(symbol, ts, "atr_invalid", ch)
 
     price = float(bundle.m5.df.iloc[i5]["close"])
-    sweep_present = False
+    sweep_valid = False
     if sweep is not None:
         bars_since = i15 - int(sweep.index)
         dist = abs(price - float(sweep.extreme)) / atr_v
-        if bars_since <= x_max and dist <= float(
-            cfg.get("liquidity", "D_max_atr", default=2.0)
-        ):
-            sweep_present = True
-        else:
-            sweep = None
+        if bars_since <= 5 and dist <= 1.5:
+            sweep_valid = True
 
     mit_mode = cfg.fvg_mitigation_mode
     fvgs = detect_fvgs(
@@ -575,54 +567,59 @@ def evaluate(
         )
         used_price_fallback = True
 
-    # Hard filter: real POI only (no price-anchor random entries)
-    if used_price_fallback:
-        return _no_trade(symbol, ts, "no_real_poi", ch)
-
-    # Hard filter: E2 + minimum RR
-    if plan is None:
-        return _no_trade(symbol, ts, "no_liquidity_tp", ch)  # E2
-    if float(plan.rr1) < 1.2:
-        return _no_trade(symbol, ts, "rr_too_low", ch)
+    # E2 — liquidity TP only (no synthetic TP)
+    if plan is None or selected is None:
+        return _no_trade(symbol, ts, "no_liquidity_tp", ch)
 
     overlap_theta = float(cfg.get("scoring", "overlap_theta", default=0.25))
     selected_overlap = (
         0.0
-        if selected is None or not valid_pois
+        if used_price_fallback or not valid_pois
         else _poi_overlap_score(selected, valid_pois, overlap_theta)
     )
 
     rr = float(plan.rr1)
-    rr_ok = bool(rr >= RR_SCORE_TARGET)
 
+    # V3 score (primary filter)
     score = 0
-    if selected_overlap >= overlap_theta:
+    if structure_shift:
         score += 2
     if confirm_ok:
         score += 1
     if pd_ok:
         score += 1
-    if sweep_present:
+    if sweep_valid:
         score += 1
-    if rr_ok:
+    if rr >= 1.5:
         score += 2
+    elif rr >= 1.2:
+        score += 1
+    else:
+        score -= 1
+    if selected_overlap >= overlap_theta:
+        score += 2
+    if used_price_fallback:
+        score -= 1
 
     print(
         {
             "ts": ts,
             "score": score,
             "rr": rr,
-            "sweep": sweep_present,
+            "sweep": sweep_valid,
             "confirm": confirm_ok,
             "pd": pd_ok,
             "poi_count": len(valid_pois),
+            "fallback": used_price_fallback,
         }
     )
 
     if score >= 5:
-        setup_type: Literal["A+", "A"] = "A+"
+        setup_type: Literal["A+", "A", "B"] = "A+"
     elif score >= 3:
         setup_type = "A"
+    elif score >= 2:
+        setup_type = "B"
     else:
         return _no_trade(symbol, ts, "low_score", ch)
 
@@ -652,38 +649,43 @@ def evaluate(
         "f_mtf_fvg": 0.0,
         "f_disp": 1.0 if any(e.displacement_ok for e in st15.events[-3:]) else 0.0,
         "f_rr": min(float(plan.rr1) / 3.0, 1.0) if plan.rr1 else 0.0,
-        "f_rr_ok": float(rr_ok),
+        "f_rr_ok": float(rr >= 1.5),
         "f_htf_aligned": float(htf_aligned),
-        "f_sweep_present": float(sweep_present),
+        "f_sweep_present": float(sweep_valid),
         "f_pd_ok": float(pd_ok),
         "f_confirm_ok": float(confirm_ok),
         "f_session_ok": float(session_ok),
         "f_news_blocked": float(news_blocked),
         "f_poi_count": float(len(valid_pois)),
         "f_structure_shift": float(structure_shift),
+        "f_price_fallback": float(used_price_fallback),
     }
 
-    validated = ["liquidity_tp", "htf_structure_alignment", "poi_fvg_or_ob", "rr_min_1_2"]
-    if rr_ok:
+    validated = ["liquidity_tp", "structure_shift"]
+    if not used_price_fallback:
+        validated.append("poi_fvg_or_ob")
+    else:
+        validated.append("poi_price_fallback")
+    if rr >= 1.5:
         validated.append("rr_ge_1_5")
+    elif rr >= 1.2:
+        validated.append("rr_ge_1_2")
     if selected_overlap >= overlap_theta:
         validated.append("fvg_ob_overlap")
     if confirm_ok:
         validated.append("confirm_5m")
     if pd_ok:
         validated.append("premium_discount")
-    if sweep_present:
+    if sweep_valid:
         validated.append("liquidity_sweep")
-    if structure_shift:
-        validated.append("structure_shift")
     if htf_aligned:
         validated.append("htf_aligned")
     if session_ok:
         validated.append("session_ok")
 
     flags = {
-        "LiquiditySweep": sweep_present,
-        "POI": True,
+        "LiquiditySweep": sweep_valid,
+        "POI": not used_price_fallback,
         "Confirm5M": confirm_ok,
         "StructureShift": structure_shift,
         "HTFAlignment": htf_aligned,
@@ -731,15 +733,16 @@ def evaluate(
             "setup_type": setup_type,
             "score": score,
             "htf_aligned": htf_aligned,
-            "sweep_present": sweep_present,
+            "sweep_valid": sweep_valid,
             "pd_ok": pd_ok,
             "confirm_ok": confirm_ok,
             "structure_shift": structure_shift,
-            "poi_price_fallback": False,
+            "poi_price_fallback": used_price_fallback,
             "poi_count": len(valid_pois),
-            "rr_ok": rr_ok,
+            "rr": rr,
             "rr_score_target": RR_SCORE_TARGET,
             "session_ok": session_ok,
             "news_blocked": news_blocked,
+            "strategy_version": "V3",
         },
     )
