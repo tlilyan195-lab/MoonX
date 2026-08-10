@@ -152,19 +152,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="backtest",
     )
     p.add_argument("--config", default="config/strategy_v1.yaml")
-    p.add_argument(
-        "--splits",
-        action="store_true",
-        help="Run TRAIN/VAL(/OOS) calibration splits (used with --mode backtest)",
-    )
-    p.add_argument("--symbol", default="EURUSD")
-    p.add_argument(
-        "--symbols",
-        default="",
-        help="Comma-separated symbols (overrides --symbol)",
-    )
-    p.add_argument("--bars", type=int, default=3000)
-    p.add_argument("--seed", type=int, default=42)
     sub = p.add_subparsers(dest="command")
 
     b = sub.add_parser("backtest", help="Run backtest engine (ÉTAPE 4)")
@@ -223,11 +210,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.mode == "backtest":
             return cmd_backtest(
                 argparse.Namespace(
-                    symbol=args.symbol,
-                    symbols=args.symbols or args.symbol,
-                    bars=args.bars,
-                    seed=args.seed,
-                    splits=bool(getattr(args, "splits", False)),
+                    symbol="EURUSD",
+                    symbols="EURUSD",
+                    bars=3000,
+                    seed=42,
+                    splits=False,
                     include_oos=bool(getattr(args, "include_oos", False)),
                     config=args.config,
                 )
