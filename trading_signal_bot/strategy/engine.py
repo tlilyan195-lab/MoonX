@@ -339,7 +339,7 @@ def evaluate(
     Deterministic evaluation at 5M close timestamp `ts` (V3 scoring-based).
     Uses only fully closed HTF bars with close_time <= ts.
     Hard blocks: data_quality, insufficient_bars, atr_invalid, no_directional_bias,
-    no_structure_shift, no_liquidity_tp (E2). Score is the primary trade filter.
+    no_liquidity_tp (E2). Score is soft (incl. structure_shift); never blocks on score.
     """
     symbol = bundle.symbol
     asset_class = bundle.asset_class
@@ -400,8 +400,6 @@ def evaluate(
         )
 
     structure_shift = bool(st1.bos_count_in_bias >= 1)
-    if not structure_shift:
-        return _no_trade(symbol, ts, "no_structure_shift", ch)
 
     htf_aligned = bool(biases_aligned(st4.bias, st1.bias))
 
@@ -584,6 +582,8 @@ def evaluate(
     score = 0
     if structure_shift:
         score += 2
+    else:
+        score -= 1
     if confirm_ok:
         score += 1
     if pd_ok:
@@ -618,10 +618,8 @@ def evaluate(
         setup_type: Literal["A+", "A", "B"] = "A+"
     elif score >= 3:
         setup_type = "A"
-    elif score >= 2:
-        setup_type = "B"
     else:
-        return _no_trade(symbol, ts, "low_score", ch)
+        setup_type = "B"
 
     deep = 0.0
     if pd_state.pos is not None:
@@ -661,7 +659,9 @@ def evaluate(
         "f_price_fallback": float(used_price_fallback),
     }
 
-    validated = ["liquidity_tp", "structure_shift"]
+    validated = ["liquidity_tp"]
+    if structure_shift:
+        validated.append("structure_shift")
     if not used_price_fallback:
         validated.append("poi_fvg_or_ob")
     else:
