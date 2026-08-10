@@ -554,7 +554,9 @@ def evaluate(
         }
     )
 
-    validated = ["structure_shift", "rr_min", "session_ok"]
+    validated = ["rr_min", "session_ok"]
+    if structure_shift:
+        validated.append("structure_shift")
     if not used_price_fallback:
         validated.append("poi_fvg_or_ob")
     else:
