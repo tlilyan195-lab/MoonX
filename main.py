@@ -45,9 +45,10 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     include_oos = bool(getattr(args, "include_oos", False))
     print("BACKTEST INCLUDE OOS:", include_oos)
 
+    # --symbols (comma-separated) overrides --symbol fallback
     symbols = [
         s.strip()
-        for s in str(getattr(args, "symbols", "") or "").split(",")
+        for s in str(getattr(args, "symbols", None) or args.symbol).split(",")
         if s.strip()
     ]
     if not symbols:
