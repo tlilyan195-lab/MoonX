@@ -1,12 +1,14 @@
 """Strategy engine: deterministic evaluate() -> SIGNAL_LONG | SIGNAL_SHORT | NO_TRADE.
 
-Hard NO_TRADE only (V6 frequency):
-  data_quality, insufficient_bars, atr_invalid, no_directional_bias
+Hard NO_TRADE (V6 production):
+  data_quality, insufficient_bars, atr_invalid, no_directional_bias,
+  session_filter, rr_below_1_5, cooldown, duplicate_setup, low_score
 
-Soft scoring: HTF (+2), structure (+1), RR tiers, confirm/sweep/PD (+1 optional).
-No valid POI → fallback entry with score -1 (never hard-rejects).
-If bias + ATR valid + RR ≥ 1.0 → always emit a trade.
-Setup: A+ if score ≥ 2, A if score ≥ 1 (or forced), else low_score.
+Soft scoring: HTF (+2), structure (+1), RR tiers, confirm/sweep/PD (+1).
+No valid POI → fallback entry with score -1.
+PD required for A+; if pd False, score capped at 4.
+Sessions: London 07:00–11:00 UTC, New York 13:00–17:00 UTC only.
+Cooldown + unique-setup anti-spam (cooldown_bars=5).
 Anti look-ahead via closed-bar asof indices. No randomness.
 """
 
@@ -44,11 +46,19 @@ from trading_signal_bot.strategy.poi import (
 from trading_signal_bot.strategy.premium_discount import in_ote, premium_discount
 from trading_signal_bot.strategy.scoring import explanation_from_flags
 
-# Soft RR target for scoring (not a hard block)
+# Soft RR target / hard minimum for production V6
 RR_SCORE_TARGET = 1.5
-# Relaxed 5M confirmation (scoring only — never blocks)
+RR_HARD_MIN = 1.5
+# Default anti-spam cooldown (5M bars)
+DEFAULT_COOLDOWN_BARS = 5
+# Unique-setup distance vs last entry
+UNIQUE_SETUP_ATR_MULT = 0.5
+# Relaxed 5M confirmation (scoring only — never blocks alone)
 CONFIRM_MAX_BARS = 10
 CONFIRM_THETA_BODY = 0.3
+
+# Per-symbol last accepted signal (cooldown + unique setup)
+_LAST_SIGNAL: dict[str, dict[str, Any]] = {}
 
 
 def _asof_index(df: pd.DataFrame, ts: pd.Timestamp) -> int | None:
@@ -81,6 +91,7 @@ def _no_trade(
 
 
 def _session_ok(ts: pd.Timestamp, asset_class: AssetClass, cfg: StrategyConfig) -> bool:
+    """Legacy config-based session helper (feature flag only)."""
     if asset_class == "CRYPTO":
         return True
     windows_raw = cfg.get("sessions", "fx_default", default=[]) or []
@@ -90,6 +101,17 @@ def _session_ok(ts: pd.Timestamp, asset_class: AssetClass, cfg: StrategyConfig) 
     if not windows:
         return True
     return is_in_session_windows(ts, windows)
+
+
+def _session_valid_london_ny(ts: pd.Timestamp) -> bool:
+    """Hard V6 sessions: London 07:00–11:00 UTC, New York 13:00–17:00 UTC."""
+    t = pd.Timestamp(ts)
+    if t.tzinfo is None:
+        t = t.tz_localize("UTC")
+    else:
+        t = t.tz_convert("UTC")
+    hour = int(t.hour)
+    return hour in (7, 8, 9, 10) or hour in (13, 14, 15, 16)
 
 
 def _vol_ok(df_15m: pd.DataFrame, asof: int, cfg: StrategyConfig) -> bool:
@@ -108,6 +130,47 @@ def _vol_ok(df_15m: pd.DataFrame, asof: int, cfg: StrategyConfig) -> bool:
         return False
     ratio = atr_now / atr_ref
     return vmin <= ratio <= vmax
+
+
+def _record_signal(
+    symbol: str,
+    index: int,
+    direction: Literal["LONG", "SHORT"],
+    entry: float,
+) -> None:
+    _LAST_SIGNAL[symbol] = {
+        "index": int(index),
+        "direction": direction,
+        "entry": float(entry),
+    }
+
+
+def _cooldown_blocked(symbol: str, current_index: int, cooldown_bars: int) -> bool:
+    prev = _LAST_SIGNAL.get(symbol)
+    if not prev:
+        return False
+    last_i = int(prev["index"])
+    # Rewound / new run → reset
+    if current_index < last_i:
+        _LAST_SIGNAL.pop(symbol, None)
+        return False
+    return (current_index - last_i) < int(cooldown_bars)
+
+
+def _duplicate_setup_blocked(
+    symbol: str,
+    direction: Literal["LONG", "SHORT"],
+    entry: float,
+    atr_value: float,
+) -> bool:
+    prev = _LAST_SIGNAL.get(symbol)
+    if not prev:
+        return False
+    if prev.get("direction") != direction:
+        return False
+    if not np.isfinite(atr_value) or atr_value <= 0:
+        return False
+    return abs(float(entry) - float(prev["entry"])) < (UNIQUE_SETUP_ATR_MULT * float(atr_value))
 
 
 def _confirm_5m(
@@ -338,15 +401,18 @@ def evaluate(
     news_blackout: bool = False,
 ) -> SignalDecision:
     """
-    Deterministic evaluation at 5M close timestamp `ts` (V6 frequency).
-    Uses only fully closed HTF bars with close_time <= ts.
-    Hard blocks: data_quality, insufficient_bars, atr_invalid, no_directional_bias.
-    No POI → fallback (-1). Confirm/sweep/PD optional (+1). A+ ≥ 2, A ≥ 1.
-    Force trade when bias + ATR valid + RR ≥ 1.0.
+    Deterministic evaluation at 5M close timestamp `ts` (V6 production).
+    Hard blocks: data_quality, insufficient_bars, atr_invalid, no_directional_bias,
+    session_filter (London/NY UTC), rr < 1.5, cooldown, duplicate_setup, low_score.
+    A+ requires score ≥ 3 AND pd; A requires score ≥ 1.
     """
     symbol = bundle.symbol
     asset_class = bundle.asset_class
     ch = cfg.hash
+    cooldown_bars = int(
+        cfg.get("meta", "cooldown_bars", default=DEFAULT_COOLDOWN_BARS)
+        or DEFAULT_COOLDOWN_BARS
+    )
 
     q = bundle.quality()
     if not q.ok:
@@ -370,6 +436,7 @@ def evaluate(
 
     news_blocked = bool(news_blackout)
     session_ok = _session_ok(ts, asset_class, cfg)
+    session_valid = _session_valid_london_ny(ts)
 
     n4 = int(cfg.get("pivots", "N_4H", default=2))
     n1 = int(cfg.get("pivots", "N_1H", default=2))
@@ -599,7 +666,7 @@ def evaluate(
     rr = float(plan.rr1)
     sweep_present = sweep_valid
 
-    # Core structure + optional secondary signals (never block)
+    # Core structure + optional secondary signals (HTF / confirm / sweep unchanged)
     score = 0
     if htf_aligned:
         score += 2
@@ -618,25 +685,80 @@ def evaluate(
     if fallback_entry:
         score -= 1
 
+    # PD hardening: without PD, score cannot exceed 4 (blocks inflated non-PD A+)
+    if not pd_ok:
+        score = min(score, 4)
+
+    cooldown_block = _cooldown_blocked(symbol, i5, cooldown_bars)
+    duplicate_setup = _duplicate_setup_blocked(
+        symbol, direction, float(plan.entry), atr_v
+    )
+
     print(
         {
             "ts": ts,
             "score": score,
             "rr": rr,
-            "fallback": fallback_entry,
-            "confirm": confirm_ok,
-            "sweep": sweep_present,
             "pd": pd_ok,
+            "cooldown_block": cooldown_block,
+            "session_valid": session_valid,
         }
     )
 
-    # Thresholds: A+ ≥ 2, A ≥ 1
-    # Force trade when bias (already passed) + ATR valid + RR ≥ 1.0
-    if score >= 2:
+    # Hard session filter (London / New York only)
+    if not session_valid:
+        return _no_trade(
+            symbol,
+            ts,
+            "session_filter",
+            ch,
+            meta={"session_valid": False, "score": score, "rr": rr, "pd": pd_ok},
+        )
+
+    # Hard RR quality filter
+    if rr < RR_HARD_MIN:
+        return _no_trade(
+            symbol,
+            ts,
+            "rr_below_1_5",
+            ch,
+            meta={"rr": rr, "rr_min": RR_HARD_MIN, "score": score, "pd": pd_ok},
+        )
+
+    # Anti-spam cooldown
+    if cooldown_block:
+        return _no_trade(
+            symbol,
+            ts,
+            "cooldown",
+            ch,
+            meta={
+                "cooldown_block": True,
+                "cooldown_bars": cooldown_bars,
+                "last_signal_index": (_LAST_SIGNAL.get(symbol) or {}).get("index"),
+                "current_index": i5,
+            },
+        )
+
+    # Unique setup: same direction near last entry
+    if duplicate_setup:
+        return _no_trade(
+            symbol,
+            ts,
+            "duplicate_setup",
+            ch,
+            meta={
+                "direction": direction,
+                "entry": float(plan.entry),
+                "last_entry": (_LAST_SIGNAL.get(symbol) or {}).get("entry"),
+                "atr": atr_v,
+            },
+        )
+
+    # Tiers: A+ = score >= 3 AND pd; A = score >= 1
+    if score >= 3 and pd_ok:
         setup_type: Literal["A+", "A", "B"] = "A+"
     elif score >= 1:
-        setup_type = "A"
-    elif rr >= 1.0:
         setup_type = "A"
     else:
         return _no_trade(symbol, ts, "low_score", ch)
@@ -673,10 +795,12 @@ def evaluate(
         "f_pd_ok": float(pd_ok),
         "f_confirm_ok": float(confirm_ok),
         "f_session_ok": float(session_ok),
+        "f_session_valid": float(session_valid),
         "f_news_blocked": float(news_blocked),
         "f_poi_count": float(len(valid_pois)),
         "f_structure_shift": float(structure_shift),
         "f_price_fallback": float(fallback_entry),
+        "f_cooldown_block": float(cooldown_block),
     }
 
     validated = ["liquidity_tp"]
@@ -688,8 +812,6 @@ def evaluate(
         validated.append("poi_price_fallback")
     if rr >= 1.5:
         validated.append("rr_ge_1_5")
-    elif rr >= 1.0:
-        validated.append("rr_ge_1_0")
     if selected_overlap >= overlap_theta:
         validated.append("fvg_ob_overlap")
     if confirm_ok:
@@ -700,7 +822,9 @@ def evaluate(
         validated.append("liquidity_sweep")
     if htf_aligned:
         validated.append("htf_aligned")
-    if session_ok:
+    if session_valid:
+        validated.append("session_london_ny")
+    elif session_ok:
         validated.append("session_ok")
 
     flags = {
@@ -717,16 +841,15 @@ def evaluate(
     decision_type: Literal["SIGNAL_LONG", "SIGNAL_SHORT"] = (
         "SIGNAL_LONG" if direction == "LONG" else "SIGNAL_SHORT"
     )
-    # Deduper keys on (symbol, direction, sweep_id, sweep_time).
-    # Bucket identity so distinct entries are not collapsed into one trade,
-    # while still suppressing true same-bar spam within a 15M window.
-    bucket_ts = pd.Timestamp(ts).floor("15min")
     if sweep is not None:
-        dedupe_sweep_id = f"{sweep.level.level_id}:{selected.poi_id}:{bucket_ts.isoformat()}"
-        dedupe_sweep_time = str(bucket_ts)
+        dedupe_sweep_id = sweep.level.level_id
+        dedupe_sweep_time = str(sweep.ts)
     else:
-        dedupe_sweep_id = f"NOSWEEP:{selected.poi_id}:{bucket_ts.isoformat()}"
-        dedupe_sweep_time = str(bucket_ts)
+        dedupe_sweep_id = f"NOSWEEP:{selected.poi_id}"
+        dedupe_sweep_time = str(ts)
+
+    # Accept signal → update cooldown / unique-setup memory
+    _record_signal(symbol, i5, direction, float(plan.entry))
 
     return SignalDecision(
         decision=decision_type,
@@ -774,7 +897,11 @@ def evaluate(
             "poi_count": len(valid_pois),
             "rr": rr,
             "rr_score_target": RR_SCORE_TARGET,
+            "rr_hard_min": RR_HARD_MIN,
             "session_ok": session_ok,
+            "session_valid": session_valid,
+            "cooldown_block": cooldown_block,
+            "cooldown_bars": cooldown_bars,
             "news_blocked": news_blocked,
             "strategy_version": "V6",
         },
