@@ -1,14 +1,11 @@
 """Strategy engine: deterministic evaluate() -> SIGNAL_LONG | SIGNAL_SHORT | NO_TRADE.
 
-Hard NO_TRADE (V6 production):
-  data_quality, insufficient_bars, atr_invalid, no_directional_bias,
-  session_filter, rr_below_1_5, cooldown, duplicate_setup, low_score
+Hard NO_TRADE (V7):
+  data_quality, insufficient_bars, atr_invalid, no_directional_bias, low_volatility
 
-Soft scoring: HTF (+2), structure (+1), RR tiers, confirm/sweep/PD (+1).
-No valid POI → fallback entry with score -1.
-PD required for A+; if pd False, score capped at 4.
-Sessions: London 07:00–11:00 UTC, New York 13:00–17:00 UTC only.
-Cooldown + unique-setup anti-spam (cooldown_bars=5).
+Decision intelligence:
+  HTF regime (trend_up / trend_down / range), ATR percentile volatility,
+  adaptive cooldown, entry-quality anti-chop, refined PD/RR tiers.
 Anti look-ahead via closed-bar asof indices. No randomness.
 """
 
@@ -22,7 +19,7 @@ import pandas as pd
 from trading_signal_bot.config import StrategyConfig
 from trading_signal_bot.data import AssetClass, MultiTimeframeBundle
 from trading_signal_bot.data.sessions import SessionWindow, is_in_session_windows
-from trading_signal_bot.indicators import atr
+from trading_signal_bot.indicators import atr, pivot_highs, pivot_lows
 from trading_signal_bot.liquidity import (
     build_liquidity_levels,
     detect_sweep_on_bar,
@@ -46,18 +43,26 @@ from trading_signal_bot.strategy.poi import (
 from trading_signal_bot.strategy.premium_discount import in_ote, premium_discount
 from trading_signal_bot.strategy.scoring import explanation_from_flags
 
-# Soft RR target / hard minimum for production V6
+Regime = Literal["trend_up", "trend_down", "range"]
+VolState = Literal["low", "normal", "high"]
+
 RR_SCORE_TARGET = 1.5
 RR_HARD_MIN = 1.5
-# Default anti-spam cooldown (5M bars)
-DEFAULT_COOLDOWN_BARS = 5
-# Unique-setup distance vs last entry
-UNIQUE_SETUP_ATR_MULT = 0.5
-# Relaxed 5M confirmation (scoring only — never blocks alone)
 CONFIRM_MAX_BARS = 10
 CONFIRM_THETA_BODY = 0.3
 
-# Per-symbol last accepted signal (cooldown + unique setup)
+REGIME_LOOKBACK = 40
+REGIME_PIVOT = 2
+ATR_PCT_WINDOW = 100
+LOW_VOL_PERCENTILE = 20.0
+HIGH_VOL_PERCENTILE = 80.0
+ENTRY_NEAR_ATR_MULT = 0.3
+MID_RANGE_FRAC = 0.25
+COOLDOWN_HIGH_SCORE = 3
+COOLDOWN_LOW_SCORE = 6
+SCORE_HIGH_FOR_SHORT_CD = 5
+
+# Per-symbol last accepted signal (adaptive cooldown + entry quality)
 _LAST_SIGNAL: dict[str, dict[str, Any]] = {}
 
 
@@ -104,14 +109,14 @@ def _session_ok(ts: pd.Timestamp, asset_class: AssetClass, cfg: StrategyConfig) 
 
 
 def _session_valid_london_ny(ts: pd.Timestamp) -> bool:
-    """Hard V6 sessions: London 07:00–11:00 UTC, New York 13:00–17:00 UTC."""
+    """V7 soft sessions: London 06:00–12:00 UTC, New York 12:00–18:00 UTC."""
     t = pd.Timestamp(ts)
     if t.tzinfo is None:
         t = t.tz_localize("UTC")
     else:
         t = t.tz_convert("UTC")
     hour = int(t.hour)
-    return hour in (7, 8, 9, 10) or hour in (13, 14, 15, 16)
+    return 6 <= hour < 12 or 12 <= hour < 18
 
 
 def _vol_ok(df_15m: pd.DataFrame, asof: int, cfg: StrategyConfig) -> bool:
@@ -132,45 +137,176 @@ def _vol_ok(df_15m: pd.DataFrame, asof: int, cfg: StrategyConfig) -> bool:
     return vmin <= ratio <= vmax
 
 
+def _swing_series(
+    df: pd.DataFrame,
+    asof: int,
+    lookback: int = REGIME_LOOKBACK,
+    n_pivot: int = REGIME_PIVOT,
+) -> tuple[list[float], list[float]]:
+    """Confirmed swing highs/lows in the lookback window ending at asof."""
+    if df is None or df.empty or asof < 0:
+        return [], []
+    start = max(0, asof - lookback + 1)
+    sub = df.iloc[start : asof + 1]
+    if len(sub) < (2 * n_pivot + 3):
+        return [], []
+    high = sub["high"].to_numpy(dtype=float)
+    low = sub["low"].to_numpy(dtype=float)
+    ph = pivot_highs(high, n_pivot)
+    pl = pivot_lows(low, n_pivot)
+    highs = [float(high[i]) for i in range(len(high)) if bool(ph[i])]
+    lows = [float(low[i]) for i in range(len(low)) if bool(pl[i])]
+    return highs, lows
+
+
+def _classify_swing_regime(highs: list[float], lows: list[float]) -> Regime:
+    """HH+HL → trend_up; LH+LL → trend_down; else range."""
+    hh = len(highs) >= 2 and highs[-1] > highs[-2]
+    hl = len(lows) >= 2 and lows[-1] > lows[-2]
+    lh = len(highs) >= 2 and highs[-1] < highs[-2]
+    ll = len(lows) >= 2 and lows[-1] < lows[-2]
+    if hh and hl:
+        return "trend_up"
+    if lh and ll:
+        return "trend_down"
+    return "range"
+
+
+def _detect_regime(
+    df_h1: pd.DataFrame,
+    df_h4: pd.DataFrame,
+    i1: int,
+    i4: int,
+) -> Regime:
+    """Combine H1 + H4 swing structure into a single regime label."""
+    h1_hi, h1_lo = _swing_series(df_h1, i1)
+    h4_hi, h4_lo = _swing_series(df_h4, i4)
+    r1 = _classify_swing_regime(h1_hi, h1_lo)
+    r4 = _classify_swing_regime(h4_hi, h4_lo)
+    if r1 == r4:
+        return r1
+    if r1 != "range" and r4 == "range":
+        return r1
+    if r4 != "range" and r1 == "range":
+        return r4
+    # Conflicting directional HTF → treat as range (choppy)
+    return "range"
+
+
+def _regime_aligns(regime: Regime, direction: Literal["LONG", "SHORT"]) -> bool:
+    if regime == "trend_up" and direction == "LONG":
+        return True
+    if regime == "trend_down" and direction == "SHORT":
+        return True
+    return False
+
+
+def _regime_opposes(regime: Regime, direction: Literal["LONG", "SHORT"]) -> bool:
+    if regime == "trend_up" and direction == "SHORT":
+        return True
+    if regime == "trend_down" and direction == "LONG":
+        return True
+    return False
+
+
+def _atr_percentile_state(
+    atr_series: pd.Series,
+    asof: int,
+    window: int = ATR_PCT_WINDOW,
+) -> tuple[float, VolState, bool]:
+    """
+    ATR percentile in [0, 100], volatility_state, and low_vol flag.
+    low_vol when ATR < 20th percentile of the rolling window.
+    """
+    if atr_series is None or len(atr_series) == 0 or asof < 0:
+        return float("nan"), "normal", False
+    end = asof + 1
+    start = max(0, end - window)
+    window_vals = atr_series.iloc[start:end].to_numpy(dtype=float)
+    window_vals = window_vals[np.isfinite(window_vals) & (window_vals > 0)]
+    now = float(atr_series.iloc[asof]) if asof < len(atr_series) else float("nan")
+    if len(window_vals) < 5 or not np.isfinite(now) or now <= 0:
+        return float("nan"), "normal", False
+    pct = float(100.0 * np.mean(window_vals <= now))
+    low_vol = pct < LOW_VOL_PERCENTILE
+    if low_vol:
+        state: VolState = "low"
+    elif pct >= HIGH_VOL_PERCENTILE:
+        state = "high"
+    else:
+        state = "normal"
+    return pct, state, low_vol
+
+
+def _recent_range(
+    df: pd.DataFrame,
+    asof: int,
+    lookback: int = REGIME_LOOKBACK,
+) -> tuple[float, float]:
+    start = max(0, asof - lookback + 1)
+    sub = df.iloc[start : asof + 1]
+    if sub.empty:
+        return float("nan"), float("nan")
+    return float(sub["high"].max()), float(sub["low"].min())
+
+
+def _mid_range_blocked(price: float, range_hi: float, range_lo: float) -> bool:
+    if not (np.isfinite(price) and np.isfinite(range_hi) and np.isfinite(range_lo)):
+        return False
+    width = range_hi - range_lo
+    if width <= 0:
+        return False
+    mid = 0.5 * (range_hi + range_lo)
+    return abs(price - mid) < (MID_RANGE_FRAC * width)
+
+
+def _adaptive_cooldown_bars(last_score: float | None) -> int:
+    if last_score is not None and float(last_score) >= SCORE_HIGH_FOR_SHORT_CD:
+        return COOLDOWN_HIGH_SCORE
+    return COOLDOWN_LOW_SCORE
+
+
 def _record_signal(
     symbol: str,
     index: int,
     direction: Literal["LONG", "SHORT"],
     entry: float,
+    score: float,
 ) -> None:
     _LAST_SIGNAL[symbol] = {
         "index": int(index),
         "direction": direction,
         "entry": float(entry),
+        "score": float(score),
     }
 
 
-def _cooldown_blocked(symbol: str, current_index: int, cooldown_bars: int) -> bool:
+def _cooldown_blocked(symbol: str, current_index: int) -> tuple[bool, int]:
     prev = _LAST_SIGNAL.get(symbol)
     if not prev:
-        return False
+        return False, COOLDOWN_LOW_SCORE
     last_i = int(prev["index"])
-    # Rewound / new run → reset
     if current_index < last_i:
         _LAST_SIGNAL.pop(symbol, None)
-        return False
-    return (current_index - last_i) < int(cooldown_bars)
+        return False, COOLDOWN_LOW_SCORE
+    cd = _adaptive_cooldown_bars(prev.get("score"))
+    return (current_index - last_i) < cd, cd
 
 
-def _duplicate_setup_blocked(
-    symbol: str,
-    direction: Literal["LONG", "SHORT"],
-    entry: float,
-    atr_value: float,
-) -> bool:
+def _entry_distance_from_last(symbol: str, entry: float) -> float:
     prev = _LAST_SIGNAL.get(symbol)
     if not prev:
-        return False
-    if prev.get("direction") != direction:
+        return float("nan")
+    return abs(float(entry) - float(prev["entry"]))
+
+
+def _entry_too_close(symbol: str, entry: float, atr_value: float) -> bool:
+    prev = _LAST_SIGNAL.get(symbol)
+    if not prev:
         return False
     if not np.isfinite(atr_value) or atr_value <= 0:
         return False
-    return abs(float(entry) - float(prev["entry"])) < (UNIQUE_SETUP_ATR_MULT * float(atr_value))
+    return abs(float(entry) - float(prev["entry"])) < (ENTRY_NEAR_ATR_MULT * float(atr_value))
 
 
 def _confirm_5m(
@@ -295,7 +431,7 @@ def _make_plan(
     Build risk plan in-engine:
       - entry from caller (POI mid-or-better or raw price)
       - SL from POI edge ± ATR buffer (build_stop)
-      - TP from liquidity only (E2); rr_min=0 so low RR is scoring-only
+      - TP from liquidity only (E2); rr_min=0 so low RR is scored/gated later
     """
     if not np.isfinite(raw_entry) or not np.isfinite(atr_value) or atr_value <= 0:
         return None
@@ -308,7 +444,6 @@ def _make_plan(
         direction, float(raw_entry), float(atr_value), asset_class, costs_cfg
     )
 
-    # SL: POI extreme ± ATR buffer; sl_ref tightens further when present
     if direction == "LONG":
         extreme = float(poi.bottom) if sl_ref is None else min(float(sl_ref), float(poi.bottom))
     else:
@@ -325,7 +460,6 @@ def _make_plan(
     if risk <= 0 or not np.isfinite(risk):
         return None
 
-    # E2: any opposite liquidity TP (rr_min=0); no synthetic TP
     tp1_lv, tp2_lv, tp1, tp2 = build_liquidity_tps(
         direction, entry, sl, levels, float(atr_value), rr_min=0.0
     )
@@ -401,18 +535,13 @@ def evaluate(
     news_blackout: bool = False,
 ) -> SignalDecision:
     """
-    Deterministic evaluation at 5M close timestamp `ts` (V6 production).
-    Hard blocks: data_quality, insufficient_bars, atr_invalid, no_directional_bias,
-    session_filter (London/NY UTC), rr < 1.5, cooldown, duplicate_setup, low_score.
-    A+ requires score ≥ 3 AND pd; A requires score ≥ 1.
+    Deterministic evaluation at 5M close timestamp `ts` (V7 decision engine).
+    Hard blocks: data_quality, insufficient_bars, atr_invalid,
+    no_directional_bias (incl. regime oppose), low_volatility.
     """
     symbol = bundle.symbol
     asset_class = bundle.asset_class
     ch = cfg.hash
-    cooldown_bars = int(
-        cfg.get("meta", "cooldown_bars", default=DEFAULT_COOLDOWN_BARS)
-        or DEFAULT_COOLDOWN_BARS
-    )
 
     q = bundle.quality()
     if not q.ok:
@@ -431,7 +560,6 @@ def evaluate(
         ts = ts.tz_localize("UTC")
     else:
         ts = ts.tz_convert("UTC")
-    # Snap to last closed 5M bar (anti look-ahead)
     ts = bundle.m5.df.index[i5]
 
     news_blocked = bool(news_blackout)
@@ -454,7 +582,6 @@ def evaluate(
     )
 
     # Softened HTF context: 1H bias with 4H same-side or RANGE/NEUTRAL
-    # (engine bias enum uses NEUTRAL for range-like state)
     st4_soft = st4.bias in ("BULL", "BEAR", "RANGE", "NEUTRAL")
     if st1.bias == "BULL" and st4.bias in ("BULL", "RANGE", "NEUTRAL"):
         direction: Literal["LONG", "SHORT"] = "LONG"
@@ -469,8 +596,24 @@ def evaluate(
             meta={"bias_4h": st4.bias, "bias_1h": st1.bias, "st4_soft": st4_soft},
         )
 
-    structure_shift = bool(st1.bos_count_in_bias >= 1)
+    # V7 regime intelligence (H1 + H4 swing sequences)
+    regime = _detect_regime(bundle.h1.df, bundle.h4.df, i1, i4)
+    regime_aligned = _regime_aligns(regime, direction)
+    if _regime_opposes(regime, direction):
+        return _no_trade(
+            symbol,
+            ts,
+            "no_directional_bias",
+            ch,
+            meta={
+                "regime": regime,
+                "direction": direction,
+                "bias_4h": st4.bias,
+                "bias_1h": st1.bias,
+            },
+        )
 
+    structure_shift = bool(st1.bos_count_in_bias >= 1)
     htf_aligned = bool(biases_aligned(st4.bias, st1.bias))
 
     levels = build_liquidity_levels(
@@ -486,7 +629,6 @@ def evaluate(
         asof_1h=i1,
     )
 
-    # Soft: liquidity sweep (never hard-blocks)
     x_max = int(cfg.get("confirmation", "X_max_bars_15m_after_sweep", default=6))
     sweep = None
     start_i = max(0, i15 - x_max)
@@ -508,6 +650,20 @@ def evaluate(
     atr_v = float(atr_15.iloc[i15]) if len(atr_15) else float("nan")
     if not np.isfinite(atr_v) or atr_v <= 0:
         return _no_trade(symbol, ts, "atr_invalid", ch)
+
+    atr_percentile, volatility_state, low_vol = _atr_percentile_state(atr_15, i15)
+    if low_vol:
+        return _no_trade(
+            symbol,
+            ts,
+            "low_volatility",
+            ch,
+            meta={
+                "atr_percentile": atr_percentile,
+                "volatility_state": volatility_state,
+                "atr": atr_v,
+            },
+        )
 
     price = float(bundle.m5.df.iloc[i5]["close"])
     sweep_valid = False
@@ -574,7 +730,6 @@ def evaluate(
     else:
         pd_ok = pd_state.zone == "PREMIUM"
 
-    # Confirm optional: +1 only if present (never blocks)
     confirm_ok = _confirm_5m(
         bundle.m5.df,
         i5,
@@ -618,7 +773,7 @@ def evaluate(
             sl_ref,
         )
 
-    # No valid POI (or no usable plan) → fallback entry, never hard-reject
+    # No valid POI → ATR RiskPlan fallback (score -1, meta.fallback=True)
     if selected is None or plan is None:
         selected = _price_anchor_poi(direction, price, atr_v, ts, i15)
         raw_entry = _entry_in_poi(direction, selected, price)
@@ -628,7 +783,6 @@ def evaluate(
         fallback_entry = True
 
     if plan is None:
-        # ATR geometric fallback — always produce a plan when ATR is valid
         fb_entry = float(price)
         if direction == "LONG":
             fallback_sl = float(price) - float(atr_v)
@@ -665,103 +819,107 @@ def evaluate(
 
     rr = float(plan.rr1)
     sweep_present = sweep_valid
+    entry_distance_from_last = _entry_distance_from_last(symbol, float(plan.entry))
+    range_hi, range_lo = _recent_range(bundle.h1.df, i1)
+    mid_range = _mid_range_blocked(price, range_hi, range_lo)
+    cooldown_applied, cooldown_bars = _cooldown_blocked(symbol, i5)
+    entry_near = _entry_too_close(symbol, float(plan.entry), atr_v)
 
-    # Core structure + optional secondary signals (HTF / confirm / sweep unchanged)
+    # --- Scoring (extend existing factors; V7 refinements) ---
     score = 0
     if htf_aligned:
         score += 2
     if structure_shift:
         score += 1
-    if rr >= 1.5:
-        score += 2
-    elif rr >= 1.0:
-        score += 1
     if confirm_ok:
-        score += 1
-    if pd_ok:
         score += 1
     if sweep_present:
         score += 1
+
+    # Regime
+    if regime == "range":
+        score -= 1
+    elif regime_aligned:
+        score += 1
+
+    # PD refined: aligned +1, misaligned -1
+    if pd_ok:
+        score += 1
+    else:
+        score -= 1
+
+    # RR quality tiers (replace flat +2/+1)
+    if rr >= 3.0:
+        score += 2
+    elif rr >= 2.0:
+        score += 1
+    # 1.5 <= rr < 2 → +0
+
     if fallback_entry:
         score -= 1
 
-    # PD hardening: without PD, score cannot exceed 4 (blocks inflated non-PD A+)
-    if not pd_ok:
-        score = min(score, 4)
-
-    cooldown_block = _cooldown_blocked(symbol, i5, cooldown_bars)
-    duplicate_setup = _duplicate_setup_blocked(
-        symbol, direction, float(plan.entry), atr_v
-    )
+    # Session soft filter (expanded windows): outside → -1, not hard reject
+    if not session_valid:
+        score -= 1
 
     print(
         {
             "ts": ts,
             "score": score,
             "rr": rr,
-            "pd": pd_ok,
-            "cooldown_block": cooldown_block,
+            "regime": regime,
+            "atr_percentile": atr_percentile,
+            "volatility_state": volatility_state,
+            "cooldown_applied": cooldown_applied,
             "session_valid": session_valid,
+            "fallback": fallback_entry,
+            "pd": pd_ok,
         }
     )
 
-    # Hard session filter (London / New York only)
-    if not session_valid:
-        return _no_trade(
-            symbol,
-            ts,
-            "session_filter",
-            ch,
-            meta={"session_valid": False, "score": score, "rr": rr, "pd": pd_ok},
-        )
+    common_meta = {
+        "regime": regime,
+        "atr_percentile": atr_percentile,
+        "volatility_state": volatility_state,
+        "cooldown_applied": cooldown_applied,
+        "cooldown_bars": cooldown_bars,
+        "entry_distance_from_last": entry_distance_from_last,
+        "session_valid": session_valid,
+        "fallback": fallback_entry,
+        "pd_ok": pd_ok,
+        "score": score,
+        "rr": rr,
+        "strategy_version": "V7",
+    }
 
-    # Hard RR quality filter
     if rr < RR_HARD_MIN:
-        return _no_trade(
-            symbol,
-            ts,
-            "rr_below_1_5",
-            ch,
-            meta={"rr": rr, "rr_min": RR_HARD_MIN, "score": score, "pd": pd_ok},
-        )
+        return _no_trade(symbol, ts, "rr_below_1_5", ch, meta=common_meta)
 
-    # Anti-spam cooldown
-    if cooldown_block:
+    if cooldown_applied:
+        return _no_trade(symbol, ts, "cooldown", ch, meta=common_meta)
+
+    if entry_near or mid_range:
         return _no_trade(
             symbol,
             ts,
-            "cooldown",
+            "entry_quality",
             ch,
             meta={
-                "cooldown_block": True,
-                "cooldown_bars": cooldown_bars,
-                "last_signal_index": (_LAST_SIGNAL.get(symbol) or {}).get("index"),
-                "current_index": i5,
+                **common_meta,
+                "entry_near": entry_near,
+                "mid_range": mid_range,
+                "range_hi": range_hi,
+                "range_lo": range_lo,
             },
         )
 
-    # Unique setup: same direction near last entry
-    if duplicate_setup:
-        return _no_trade(
-            symbol,
-            ts,
-            "duplicate_setup",
-            ch,
-            meta={
-                "direction": direction,
-                "entry": float(plan.entry),
-                "last_entry": (_LAST_SIGNAL.get(symbol) or {}).get("entry"),
-                "atr": atr_v,
-            },
-        )
-
-    # Tiers: A+ = score >= 3 AND pd; A = score >= 1
-    if score >= 3 and pd_ok:
+    # Tiers: A+ = score≥4 & RR≥2 & regime aligned; A = score≥2
+    if score >= 4 and rr >= 2.0 and regime_aligned:
         setup_type: Literal["A+", "A", "B"] = "A+"
-    elif score >= 1:
+    elif score >= 2:
         setup_type = "A"
     else:
-        return _no_trade(symbol, ts, "low_score", ch)
+        return _no_trade(symbol, ts, "low_score", ch, meta=common_meta)
 
     deep = 0.0
     if pd_state.pos is not None:
@@ -800,7 +958,9 @@ def evaluate(
         "f_poi_count": float(len(valid_pois)),
         "f_structure_shift": float(structure_shift),
         "f_price_fallback": float(fallback_entry),
-        "f_cooldown_block": float(cooldown_block),
+        "f_regime_aligned": float(regime_aligned),
+        "f_atr_percentile": float(atr_percentile) if np.isfinite(atr_percentile) else 0.0,
+        "f_cooldown_applied": float(cooldown_applied),
     }
 
     validated = ["liquidity_tp"]
@@ -810,7 +970,11 @@ def evaluate(
         validated.append("poi_fvg_or_ob")
     else:
         validated.append("poi_price_fallback")
-    if rr >= 1.5:
+    if rr >= 3.0:
+        validated.append("rr_ge_3")
+    elif rr >= 2.0:
+        validated.append("rr_ge_2")
+    elif rr >= 1.5:
         validated.append("rr_ge_1_5")
     if selected_overlap >= overlap_theta:
         validated.append("fvg_ob_overlap")
@@ -822,6 +986,8 @@ def evaluate(
         validated.append("liquidity_sweep")
     if htf_aligned:
         validated.append("htf_aligned")
+    if regime_aligned:
+        validated.append("regime_aligned")
     if session_valid:
         validated.append("session_london_ny")
     elif session_ok:
@@ -836,6 +1002,7 @@ def evaluate(
         "PremiumDiscount": pd_ok,
         "OverlapFVGOB": selected_overlap >= overlap_theta,
         "MajorLiquidity": bool(sweep is not None and sweep.level.major),
+        "RegimeAligned": regime_aligned,
     }
 
     decision_type: Literal["SIGNAL_LONG", "SIGNAL_SHORT"] = (
@@ -848,8 +1015,7 @@ def evaluate(
         dedupe_sweep_id = f"NOSWEEP:{selected.poi_id}"
         dedupe_sweep_time = str(ts)
 
-    # Accept signal → update cooldown / unique-setup memory
-    _record_signal(symbol, i5, direction, float(plan.entry))
+    _record_signal(symbol, i5, direction, float(plan.entry), float(score))
 
     return SignalDecision(
         decision=decision_type,
@@ -894,15 +1060,21 @@ def evaluate(
             "structure_shift": structure_shift,
             "poi_price_fallback": fallback_entry,
             "fallback_entry": fallback_entry,
+            "fallback": fallback_entry,
             "poi_count": len(valid_pois),
             "rr": rr,
             "rr_score_target": RR_SCORE_TARGET,
             "rr_hard_min": RR_HARD_MIN,
             "session_ok": session_ok,
             "session_valid": session_valid,
-            "cooldown_block": cooldown_block,
+            "regime": regime,
+            "regime_aligned": regime_aligned,
+            "atr_percentile": atr_percentile,
+            "volatility_state": volatility_state,
+            "cooldown_applied": cooldown_applied,
             "cooldown_bars": cooldown_bars,
+            "entry_distance_from_last": entry_distance_from_last,
             "news_blocked": news_blocked,
-            "strategy_version": "V6",
+            "strategy_version": "V7",
         },
     )
