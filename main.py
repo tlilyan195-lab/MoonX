@@ -24,6 +24,8 @@ from trading_signal_bot.config import StrategyConfig  # noqa: E402
 from trading_signal_bot.data import MultiTimeframeBundle  # noqa: E402
 from trading_signal_bot.data.providers import make_mtf_synthetic  # noqa: E402
 
+_COMMANDS = ("backtest", "calibrate", "oos-eval", "walk-forward")
+
 
 def _bundle_from_synthetic(symbol: str, n_5m: int, seed: int) -> MultiTimeframeBundle:
     frames = make_mtf_synthetic(symbol, n_5m=n_5m, seed=seed)
@@ -39,12 +41,15 @@ def _bundle_from_synthetic(symbol: str, n_5m: int, seed: int) -> MultiTimeframeB
 
 
 def cmd_backtest(args: argparse.Namespace) -> int:
-    print("BACKTEST ARGS:", vars(args))
     cfg = StrategyConfig.from_yaml(args.config)
-    include_oos = bool(args.include_oos)
+    include_oos = bool(getattr(args, "include_oos", False))
     print("BACKTEST INCLUDE OOS:", include_oos)
 
-    symbols = [s.strip() for s in str(args.symbols or "").split(",") if s.strip()]
+    symbols = [
+        s.strip()
+        for s in str(getattr(args, "symbols", "") or "").split(",")
+        if s.strip()
+    ]
     if not symbols:
         symbols = [str(args.symbol)]
 
@@ -139,83 +144,84 @@ def cmd_walk_forward(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Single source of truth for CLI parsing — no other parsers."""
+    """ONLY parser factory in this project entrypoint."""
     parser = argparse.ArgumentParser(
         prog="main.py",
         description="Trading Signal Bot (signals-only). Never places orders.",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", required=True)
 
-    # --- backtest (ONLY place for --symbols / --include-oos) ---
-    backtest = subparsers.add_parser(
-        "backtest",
-        help="Run backtest engine (ÉTAPE 4)",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    backtest.add_argument("--symbol", default="EURUSD", help="Single symbol")
-    backtest.add_argument(
+    # backtest — ONLY home for --symbols and --include-oos
+    b = sub.add_parser("backtest", help="Run backtest engine")
+    b.add_argument("--symbol", default="EURUSD", help="Single symbol")
+    b.add_argument(
         "--symbols",
+        dest="symbols",
         default="",
+        metavar="SYMBOLS",
         help="Comma-separated symbols (overrides --symbol). Example: XAUUSD,EURUSD,GBPUSD,USDJPY",
     )
-    backtest.add_argument("--bars", type=int, default=3000, help="Synthetic 5M bars")
-    backtest.add_argument("--seed", type=int, default=42, help="Synthetic data seed")
-    backtest.add_argument(
+    b.add_argument("--bars", type=int, default=3000)
+    b.add_argument("--seed", type=int, default=42)
+    b.add_argument(
         "--splits",
         action="store_true",
         help="Run TRAIN/VAL calibration splits (OOS excluded by default)",
     )
-    backtest.add_argument(
+    b.add_argument(
         "--include-oos",
-        action="store_true",
         dest="include_oos",
+        action="store_true",
         help="Include OOS results in split backtests",
     )
-    backtest.add_argument(
-        "--config",
-        default="config/strategy_v1.yaml",
-        help="Strategy config YAML path",
-    )
-    backtest.set_defaults(func=cmd_backtest)
+    b.add_argument("--config", default="config/strategy_v1.yaml")
+    b.set_defaults(func=cmd_backtest)
 
-    calibrate = subparsers.add_parser(
-        "calibrate",
-        help="TRAIN/VAL calibration + lock config (no OOS)",
-    )
-    calibrate.add_argument("--symbol", default="EURUSD")
-    calibrate.add_argument("--bars", type=int, default=3000)
-    calibrate.add_argument("--seed", type=int, default=42)
-    calibrate.add_argument("--config", default="config/strategy_v1.yaml")
-    calibrate.add_argument("--locked-out", default="config/strategy_v1_locked.yaml")
-    calibrate.set_defaults(func=cmd_calibrate)
+    c = sub.add_parser("calibrate", help="TRAIN/VAL calibration + lock config (no OOS)")
+    c.add_argument("--symbol", default="EURUSD")
+    c.add_argument("--bars", type=int, default=3000)
+    c.add_argument("--seed", type=int, default=42)
+    c.add_argument("--config", default="config/strategy_v1.yaml")
+    c.add_argument("--locked-out", default="config/strategy_v1_locked.yaml")
+    c.set_defaults(func=cmd_calibrate)
 
-    oos_eval = subparsers.add_parser(
-        "oos-eval",
-        help="Evaluate locked config on OOS only",
-    )
-    oos_eval.add_argument("--symbol", default="EURUSD")
-    oos_eval.add_argument("--bars", type=int, default=3000)
-    oos_eval.add_argument("--seed", type=int, default=42)
-    oos_eval.add_argument("--locked-config", default="config/strategy_v1_locked.yaml")
-    oos_eval.set_defaults(func=cmd_oos_eval)
+    o = sub.add_parser("oos-eval", help="Evaluate locked config on OOS only")
+    o.add_argument("--symbol", default="EURUSD")
+    o.add_argument("--bars", type=int, default=3000)
+    o.add_argument("--seed", type=int, default=42)
+    o.add_argument("--locked-config", default="config/strategy_v1_locked.yaml")
+    o.set_defaults(func=cmd_oos_eval)
 
-    walk_forward = subparsers.add_parser(
-        "walk-forward",
-        help="Walk-forward TRAIN→VAL folds (no OOS)",
-    )
-    walk_forward.add_argument("--symbol", default="EURUSD")
-    walk_forward.add_argument("--bars", type=int, default=3000)
-    walk_forward.add_argument("--seed", type=int, default=42)
-    walk_forward.add_argument("--config", default="config/strategy_v1.yaml")
-    walk_forward.set_defaults(func=cmd_walk_forward)
+    w = sub.add_parser("walk-forward", help="Walk-forward TRAIN→VAL folds (no OOS)")
+    w.add_argument("--symbol", default="EURUSD")
+    w.add_argument("--bars", type=int, default=3000)
+    w.add_argument("--seed", type=int, default=42)
+    w.add_argument("--config", default="config/strategy_v1.yaml")
+    w.set_defaults(func=cmd_walk_forward)
 
     return parser
 
 
+def _normalize_argv(argv: list[str] | None) -> list[str] | None:
+    """
+    Force subcommand-first order so flags like --symbols are attached to
+    the backtest subparser even if the user put them before the command.
+    Example:  --symbols EURUSD backtest  →  backtest --symbols EURUSD
+    """
+    raw = list(sys.argv[1:] if argv is None else argv)
+    cmd_idx = next((i for i, a in enumerate(raw) if a in _COMMANDS), None)
+    if cmd_idx is None or cmd_idx == 0:
+        return None if argv is None else raw
+    cmd = raw[cmd_idx]
+    return [cmd, *raw[:cmd_idx], *raw[cmd_idx + 1 :]]
+
+
 def main(argv: list[str] | None = None) -> int:
-    print("LOADED main.py FROM:", __file__)
+    print("USING FILE:", __file__)
     parser = build_parser()
-    args = parser.parse_args(argv)
+    normalized = _normalize_argv(argv)
+    args = parser.parse_args(normalized)
+    print("ARGS:", vars(args))
     return int(args.func(args))
 
 
