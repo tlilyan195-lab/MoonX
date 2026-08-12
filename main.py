@@ -108,7 +108,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
 
     symbols = [
         s.strip()
-        for s in str(getattr(args, "symbols", "") or args.symbol).split(",")
+        for s in (args.symbols if hasattr(args, "symbols") and args.symbols else args.symbol).split(",")
         if s.strip()
     ]
     if not symbols:
@@ -241,7 +241,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument(
         "--symbols",
         default="",
-        help="Comma-separated symbols (overrides --symbol). Example: EURUSD,XAUUSD,BTCUSDT",
+        help="Comma-separated symbols (overrides --symbol)",
     )
     b.add_argument("--bars", type=int, default=3000)
     b.add_argument("--seed", type=int, default=42)
