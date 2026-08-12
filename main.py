@@ -106,10 +106,9 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     compact = bool(getattr(args, "compact", False))
     print("BACKTEST INCLUDE OOS:", include_oos)
 
-    # --symbols (comma-separated) overrides --symbol fallback
     symbols = [
         s.strip()
-        for s in str(getattr(args, "symbols", None) or args.symbol).split(",")
+        for s in str(getattr(args, "symbols", "") or args.symbol).split(",")
         if s.strip()
     ]
     if not symbols:
@@ -229,17 +228,20 @@ def build_parser() -> argparse.ArgumentParser:
         prog="main.py",
         description="Trading Signal Bot (signals-only). Never places orders.",
     )
+    parser.add_argument(
+        "--symbols",
+        default="",
+        help="(global) Comma-separated symbols; prefer: backtest --symbols ...",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # backtest — ONLY home for --symbols and --include-oos
+    # backtest — home for --symbols and --include-oos
     b = sub.add_parser("backtest", help="Run backtest engine")
     b.add_argument("--symbol", default="EURUSD", help="Single symbol")
     b.add_argument(
         "--symbols",
-        dest="symbols",
         default="",
-        metavar="SYMBOLS",
-        help="Comma-separated symbols (overrides --symbol). Example: XAUUSD,EURUSD,GBPUSD,USDJPY",
+        help="Comma-separated symbols (overrides --symbol). Example: EURUSD,XAUUSD,BTCUSDT",
     )
     b.add_argument("--bars", type=int, default=3000)
     b.add_argument("--seed", type=int, default=42)
@@ -307,6 +309,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     normalized = _normalize_argv(argv)
     args = parser.parse_args(normalized)
+    # If --symbols was passed globally before subcommand, forward to backtest
+    if (
+        getattr(args, "command", None) == "backtest"
+        and not str(getattr(args, "symbols", "") or "").strip()
+    ):
+        # Root parser may have consumed symbols when placed before subcommand
+        root_ns, _ = parser.parse_known_args(normalized)
+        if str(getattr(root_ns, "symbols", "") or "").strip():
+            args.symbols = root_ns.symbols
     print("ARGS:", vars(args))
     return int(args.func(args))
 
