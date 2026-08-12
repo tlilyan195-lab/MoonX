@@ -1,11 +1,11 @@
 """Strategy engine: deterministic evaluate() -> SIGNAL_LONG | SIGNAL_SHORT | NO_TRADE.
 
-Hard NO_TRADE (V7):
-  data_quality, insufficient_bars, atr_invalid, no_directional_bias, low_volatility
+Hard NO_TRADE (V8 PRO):
+  data_quality, insufficient_bars, atr_invalid, no_directional_bias
+  (+ rr_below_1_5, cooldown, unique_setup, low_score as quality gates)
 
-Decision intelligence:
-  HTF regime (trend_up / trend_down / range), ATR percentile volatility,
-  adaptive cooldown, entry-quality anti-chop, refined PD/RR tiers.
+Frequency-balanced scoring: HTF/structure/RR/sweep/confirm/PD/session,
+fallback -1, RR bonuses at 3/5. A+ ≥ 4, A ≥ 2. No PD requirement for A+.
 Anti look-ahead via closed-bar asof indices. No randomness.
 """
 
@@ -56,13 +56,12 @@ REGIME_PIVOT = 2
 ATR_PCT_WINDOW = 100
 LOW_VOL_PERCENTILE = 20.0
 HIGH_VOL_PERCENTILE = 80.0
-ENTRY_NEAR_ATR_MULT = 0.3
-MID_RANGE_FRAC = 0.25
-COOLDOWN_HIGH_SCORE = 3
-COOLDOWN_LOW_SCORE = 6
-SCORE_HIGH_FOR_SHORT_CD = 5
+# V8 PRO: unique-setup distance vs last entry (same direction)
+ENTRY_NEAR_ATR_MULT = 1.0
+# V8 PRO: fixed short cooldown
+COOLDOWN_BARS = 2
 
-# Per-symbol last accepted signal (adaptive cooldown + entry quality)
+# Per-symbol last accepted signal (cooldown + unique setup)
 _LAST_SIGNAL: dict[str, dict[str, Any]] = {}
 
 
@@ -109,7 +108,7 @@ def _session_ok(ts: pd.Timestamp, asset_class: AssetClass, cfg: StrategyConfig) 
 
 
 def _session_valid_london_ny(ts: pd.Timestamp) -> bool:
-    """V7 soft sessions: London 06:00–12:00 UTC, New York 12:00–18:00 UTC."""
+    """London 06:00–12:00 UTC or New York 12:00–18:00 UTC (score bonus only)."""
     t = pd.Timestamp(ts)
     if t.tzinfo is None:
         t = t.tz_localize("UTC")
@@ -250,22 +249,6 @@ def _recent_range(
     return float(sub["high"].max()), float(sub["low"].min())
 
 
-def _mid_range_blocked(price: float, range_hi: float, range_lo: float) -> bool:
-    if not (np.isfinite(price) and np.isfinite(range_hi) and np.isfinite(range_lo)):
-        return False
-    width = range_hi - range_lo
-    if width <= 0:
-        return False
-    mid = 0.5 * (range_hi + range_lo)
-    return abs(price - mid) < (MID_RANGE_FRAC * width)
-
-
-def _adaptive_cooldown_bars(last_score: float | None) -> int:
-    if last_score is not None and float(last_score) >= SCORE_HIGH_FOR_SHORT_CD:
-        return COOLDOWN_HIGH_SCORE
-    return COOLDOWN_LOW_SCORE
-
-
 def _record_signal(
     symbol: str,
     index: int,
@@ -282,14 +265,15 @@ def _record_signal(
 
 
 def _cooldown_blocked(symbol: str, current_index: int) -> tuple[bool, int]:
+    """Fixed V8 cooldown: meta.cooldown_bars = 2."""
+    cd = int(COOLDOWN_BARS)
     prev = _LAST_SIGNAL.get(symbol)
     if not prev:
-        return False, COOLDOWN_LOW_SCORE
+        return False, cd
     last_i = int(prev["index"])
     if current_index < last_i:
         _LAST_SIGNAL.pop(symbol, None)
-        return False, COOLDOWN_LOW_SCORE
-    cd = _adaptive_cooldown_bars(prev.get("score"))
+        return False, cd
     return (current_index - last_i) < cd, cd
 
 
@@ -300,9 +284,17 @@ def _entry_distance_from_last(symbol: str, entry: float) -> float:
     return abs(float(entry) - float(prev["entry"]))
 
 
-def _entry_too_close(symbol: str, entry: float, atr_value: float) -> bool:
+def _unique_setup_blocked(
+    symbol: str,
+    direction: Literal["LONG", "SHORT"],
+    entry: float,
+    atr_value: float,
+) -> bool:
+    """Reject only if same direction AND abs(entry - last_entry) < 1.0 * ATR."""
     prev = _LAST_SIGNAL.get(symbol)
     if not prev:
+        return False
+    if prev.get("direction") != direction:
         return False
     if not np.isfinite(atr_value) or atr_value <= 0:
         return False
@@ -535,9 +527,9 @@ def evaluate(
     news_blackout: bool = False,
 ) -> SignalDecision:
     """
-    Deterministic evaluation at 5M close timestamp `ts` (V7 decision engine).
-    Hard blocks: data_quality, insufficient_bars, atr_invalid,
-    no_directional_bias (incl. regime oppose), low_volatility.
+    Deterministic evaluation at 5M close timestamp `ts` (V8 PRO frequency-balanced).
+    Hard blocks: data_quality, insufficient_bars, atr_invalid, no_directional_bias.
+    Quality gates: rr < 1.5, cooldown (2 bars), unique setup (1.0 ATR), low_score.
     """
     symbol = bundle.symbol
     asset_class = bundle.asset_class
@@ -596,22 +588,9 @@ def evaluate(
             meta={"bias_4h": st4.bias, "bias_1h": st1.bias, "st4_soft": st4_soft},
         )
 
-    # V7 regime intelligence (H1 + H4 swing sequences)
+    # Regime kept for diagnostics / meta only (no hard oppose reject in V8)
     regime = _detect_regime(bundle.h1.df, bundle.h4.df, i1, i4)
     regime_aligned = _regime_aligns(regime, direction)
-    if _regime_opposes(regime, direction):
-        return _no_trade(
-            symbol,
-            ts,
-            "no_directional_bias",
-            ch,
-            meta={
-                "regime": regime,
-                "direction": direction,
-                "bias_4h": st4.bias,
-                "bias_1h": st1.bias,
-            },
-        )
 
     structure_shift = bool(st1.bos_count_in_bias >= 1)
     htf_aligned = bool(biases_aligned(st4.bias, st1.bias))
@@ -651,19 +630,8 @@ def evaluate(
     if not np.isfinite(atr_v) or atr_v <= 0:
         return _no_trade(symbol, ts, "atr_invalid", ch)
 
-    atr_percentile, volatility_state, low_vol = _atr_percentile_state(atr_15, i15)
-    if low_vol:
-        return _no_trade(
-            symbol,
-            ts,
-            "low_volatility",
-            ch,
-            meta={
-                "atr_percentile": atr_percentile,
-                "volatility_state": volatility_state,
-                "atr": atr_v,
-            },
-        )
+    # Volatility diagnostics only (no hard low_volatility reject in V8)
+    atr_percentile, volatility_state, _low_vol = _atr_percentile_state(atr_15, i15)
 
     price = float(bundle.m5.df.iloc[i5]["close"])
     sweep_valid = False
@@ -730,6 +698,7 @@ def evaluate(
     else:
         pd_ok = pd_state.zone == "PREMIUM"
 
+    # Confirm optional: +1 only (never rejects)
     confirm_ok = _confirm_5m(
         bundle.m5.df,
         i5,
@@ -773,7 +742,7 @@ def evaluate(
             sl_ref,
         )
 
-    # No valid POI → ATR RiskPlan fallback (score -1, meta.fallback=True)
+    # no_valid_poi → fallback with score -1 (never hard-reject)
     if selected is None or plan is None:
         selected = _price_anchor_poi(direction, price, atr_v, ts, i15)
         raw_entry = _entry_in_poi(direction, selected, price)
@@ -783,6 +752,36 @@ def evaluate(
         fallback_entry = True
 
     if plan is None:
+        fb_entry = float(price)
+        if direction == "LONG":
+            fallback_sl = float(price) - float(atr_v)
+            fallback_tp1 = float(price) + 2.0 * float(atr_v)
+            fallback_tp2 = float(price) + 3.0 * float(atr_v)
+        else:
+            fallback_sl = float(price) + float(atr_v)
+            fallback_tp1 = float(price) - 2.0 * float(atr_v)
+            fallback_tp2 = float(price) - 3.0 * float(atr_v)
+        risk_distance = abs(fb_entry - fallback_sl)
+        plan = RiskPlan(
+            direction=direction,
+            entry=fb_entry,
+            sl=fallback_sl,
+            tp1=fallback_tp1,
+            tp2=fallback_tp2,
+            rr1=2.0,
+            rr2=3.0,
+            risk_distance=float(risk_distance),
+            tp1_level_id="fallback",
+            tp2_level_id="fallback",
+            cost_applied=0.0,
+        )
+        fallback_entry = True
+        if selected is None:
+            selected = _price_anchor_poi(direction, price, atr_v, ts, i15)
+
+    # If liquidity/POI plan RR < 1.5, upgrade to ATR geometric TP fallback
+    # so the hard RR≥1.5 filter does not starve frequency.
+    if plan is not None and float(plan.rr1) < RR_HARD_MIN:
         fb_entry = float(price)
         if direction == "LONG":
             fallback_sl = float(price) - float(atr_v)
@@ -820,47 +819,33 @@ def evaluate(
     rr = float(plan.rr1)
     sweep_present = sweep_valid
     entry_distance_from_last = _entry_distance_from_last(symbol, float(plan.entry))
-    range_hi, range_lo = _recent_range(bundle.h1.df, i1)
-    mid_range = _mid_range_blocked(price, range_hi, range_lo)
     cooldown_applied, cooldown_bars = _cooldown_blocked(symbol, i5)
-    entry_near = _entry_too_close(symbol, float(plan.entry), atr_v)
+    unique_setup = _unique_setup_blocked(symbol, direction, float(plan.entry), atr_v)
 
-    # --- Scoring (extend existing factors; V7 refinements) ---
+    # --- V8 PRO scoring ---
     score = 0
     if htf_aligned:
         score += 2
     if structure_shift:
         score += 1
-    if confirm_ok:
+    if rr >= 1.5:
         score += 1
     if sweep_present:
         score += 1
-
-    # Regime
-    if regime == "range":
-        score -= 1
-    elif regime_aligned:
+    if confirm_ok:
         score += 1
-
-    # PD refined: aligned +1, misaligned -1
     if pd_ok:
-        score += 1
-    else:
-        score -= 1
-
-    # RR quality tiers (replace flat +2/+1)
-    if rr >= 3.0:
-        score += 2
-    elif rr >= 2.0:
-        score += 1
-    # 1.5 <= rr < 2 → +0
-
+        score += 1  # optional bonus; absent → no penalty
     if fallback_entry:
         score -= 1
-
-    # Session soft filter (expanded windows): outside → -1, not hard reject
-    if not session_valid:
-        score -= 1
+    # RR bonus tiers
+    if rr >= 5.0:
+        score += 2
+    elif rr >= 3.0:
+        score += 1
+    # Session bonus (no hard reject)
+    if session_valid:
+        score += 1
 
     print(
         {
@@ -889,32 +874,33 @@ def evaluate(
         "pd_ok": pd_ok,
         "score": score,
         "rr": rr,
-        "strategy_version": "V7",
+        "strategy_version": "V8",
     }
 
+    # Hard RR filter
     if rr < RR_HARD_MIN:
         return _no_trade(symbol, ts, "rr_below_1_5", ch, meta=common_meta)
 
     if cooldown_applied:
         return _no_trade(symbol, ts, "cooldown", ch, meta=common_meta)
 
-    if entry_near or mid_range:
+    if unique_setup:
         return _no_trade(
             symbol,
             ts,
-            "entry_quality",
+            "unique_setup",
             ch,
             meta={
                 **common_meta,
-                "entry_near": entry_near,
-                "mid_range": mid_range,
-                "range_hi": range_hi,
-                "range_lo": range_lo,
+                "direction": direction,
+                "entry": float(plan.entry),
+                "last_entry": (_LAST_SIGNAL.get(symbol) or {}).get("entry"),
+                "atr": atr_v,
             },
         )
 
-    # Tiers: A+ = score≥4 & RR≥2 & regime aligned; A = score≥2
-    if score >= 4 and rr >= 2.0 and regime_aligned:
+    # Tiers: A+ = score ≥ 4; A = score ≥ 2 (no PD requirement)
+    if score >= 4:
         setup_type: Literal["A+", "A", "B"] = "A+"
     elif score >= 2:
         setup_type = "A"
@@ -970,10 +956,10 @@ def evaluate(
         validated.append("poi_fvg_or_ob")
     else:
         validated.append("poi_price_fallback")
-    if rr >= 3.0:
+    if rr >= 5.0:
+        validated.append("rr_ge_5")
+    elif rr >= 3.0:
         validated.append("rr_ge_3")
-    elif rr >= 2.0:
-        validated.append("rr_ge_2")
     elif rr >= 1.5:
         validated.append("rr_ge_1_5")
     if selected_overlap >= overlap_theta:
@@ -1008,11 +994,13 @@ def evaluate(
     decision_type: Literal["SIGNAL_LONG", "SIGNAL_SHORT"] = (
         "SIGNAL_LONG" if direction == "LONG" else "SIGNAL_SHORT"
     )
+    # Engine cooldown (2 bars) is the anti-spam gate; keep SignalDeduper
+    # from collapsing distinct bar entries that share a sweep id.
     if sweep is not None:
-        dedupe_sweep_id = sweep.level.level_id
-        dedupe_sweep_time = str(sweep.ts)
+        dedupe_sweep_id = f"{sweep.level.level_id}:{ts.isoformat()}"
+        dedupe_sweep_time = str(ts)
     else:
-        dedupe_sweep_id = f"NOSWEEP:{selected.poi_id}"
+        dedupe_sweep_id = f"NOSWEEP:{selected.poi_id}:{ts.isoformat()}"
         dedupe_sweep_time = str(ts)
 
     _record_signal(symbol, i5, direction, float(plan.entry), float(score))
@@ -1075,6 +1063,6 @@ def evaluate(
             "cooldown_bars": cooldown_bars,
             "entry_distance_from_last": entry_distance_from_last,
             "news_blocked": news_blocked,
-            "strategy_version": "V7",
+            "strategy_version": "V8",
         },
     )
