@@ -40,9 +40,70 @@ def _bundle_from_synthetic(symbol: str, n_5m: int, seed: int) -> MultiTimeframeB
     )
 
 
+def _split_names(payload: dict) -> list[str]:
+    return [k for k in ("TRAIN", "VAL", "OOS") if k in payload]
+
+
+def _n_signals_from_block(block: dict) -> int:
+    metrics = block.get("metrics") or {}
+    if "n_signals" in metrics:
+        return int(metrics.get("n_signals") or 0)
+    return int(block.get("n_decisions") or 0)
+
+
+def _symbol_signal_count(payload: dict) -> int:
+    splits = _split_names(payload)
+    if splits:
+        return sum(_n_signals_from_block(payload[name]) for name in splits)
+    return _n_signals_from_block(payload)
+
+
+def _compact_symbol_view(symbol: str, payload: dict) -> dict:
+    """Compact per-symbol metrics for quick V7→V8 analysis."""
+    splits = _split_names(payload)
+    if splits:
+        n_signals = {name: _n_signals_from_block(payload[name]) for name in splits}
+        expectancy = {
+            name: (payload[name].get("metrics") or {}).get("expectancy_R")
+            for name in splits
+        }
+        winrate = {
+            name: (payload[name].get("metrics") or {}).get("win_rate")
+            for name in splits
+        }
+    else:
+        metrics = payload.get("metrics") or {}
+        n_signals = {"ALL": int(metrics.get("n_signals") or payload.get("n_decisions") or 0)}
+        expectancy = {"ALL": metrics.get("expectancy_R")}
+        winrate = {"ALL": metrics.get("win_rate")}
+    return {
+        "symbol": symbol,
+        "n_signals": n_signals,
+        "expectancy": expectancy,
+        "winrate": winrate,
+        "includes_oos_metrics": bool(payload.get("includes_oos_metrics")),
+    }
+
+
+def _build_summary(by_symbol: dict) -> dict:
+    total_signals = 0
+    symbols_with_signals = 0
+    for payload in by_symbol.values():
+        n = _symbol_signal_count(payload)
+        total_signals += n
+        if n > 0:
+            symbols_with_signals += 1
+    return {
+        "total_symbols": len(by_symbol),
+        "symbols_with_signals": symbols_with_signals,
+        "total_signals": total_signals,
+    }
+
+
 def cmd_backtest(args: argparse.Namespace) -> int:
     cfg = StrategyConfig.from_yaml(args.config)
     include_oos = bool(getattr(args, "include_oos", False))
+    compact = bool(getattr(args, "compact", False))
     print("BACKTEST INCLUDE OOS:", include_oos)
 
     # --symbols (comma-separated) overrides --symbol fallback
@@ -56,6 +117,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
 
     by_symbol: dict = {}
     for symbol in symbols:
+        print(f"===== {symbol} =====")
         bundle = _bundle_from_synthetic(symbol, args.bars, args.seed)
         if args.splits:
             results = run_split_backtests(
@@ -63,7 +125,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
                 cfg,
                 include_oos=include_oos,
             )
-            payload = {
+            payload: dict = {
                 name: {
                     "metrics": res.metrics.to_dict(),
                     "n_decisions": len(res.decisions),
@@ -81,14 +143,31 @@ def cmd_backtest(args: argparse.Namespace) -> int:
                 "n_decisions": len(res.decisions),
                 "config_hash": res.config_hash,
                 "meta": res.meta,
+                "includes_oos_metrics": False,
             }
-            payload["includes_oos_metrics"] = False
         by_symbol[symbol] = payload
 
+    summary = _build_summary(by_symbol)
+
+    if compact:
+        compact_rows = [
+            _compact_symbol_view(sym, payload) for sym, payload in by_symbol.items()
+        ]
+        out = {"summary": summary, "symbols": compact_rows}
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+
     if len(by_symbol) == 1:
+        # Single-symbol: keep flat payload (JSON-compatible, unchanged shape)
         print(json.dumps(next(iter(by_symbol.values())), indent=2, default=str))
     else:
-        print(json.dumps({"symbols": by_symbol}, indent=2, default=str))
+        print(
+            json.dumps(
+                {"summary": summary, "symbols": by_symbol},
+                indent=2,
+                default=str,
+            )
+        )
     return 0
 
 
@@ -174,6 +253,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="include_oos",
         action="store_true",
         help="Include OOS results in split backtests",
+    )
+    b.add_argument(
+        "--compact",
+        dest="compact",
+        action="store_true",
+        help="Print compact per-symbol summary (n_signals / expectancy / winrate)",
     )
     b.add_argument("--config", default="config/strategy_v1.yaml")
     b.set_defaults(func=cmd_backtest)
