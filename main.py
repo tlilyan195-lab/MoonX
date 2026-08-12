@@ -24,6 +24,8 @@ from trading_signal_bot.config import StrategyConfig  # noqa: E402
 from trading_signal_bot.data import MultiTimeframeBundle  # noqa: E402
 from trading_signal_bot.data.providers import make_mtf_synthetic  # noqa: E402
 
+_COMMANDS = ("backtest", "calibrate", "oos-eval", "walk-forward")
+
 
 def _bundle_from_synthetic(symbol: str, n_5m: int, seed: int) -> MultiTimeframeBundle:
     frames = make_mtf_synthetic(symbol, n_5m=n_5m, seed=seed)
@@ -38,32 +40,133 @@ def _bundle_from_synthetic(symbol: str, n_5m: int, seed: int) -> MultiTimeframeB
     )
 
 
+def _split_names(payload: dict) -> list[str]:
+    return [k for k in ("TRAIN", "VAL", "OOS") if k in payload]
+
+
+def _n_signals_from_block(block: dict) -> int:
+    metrics = block.get("metrics") or {}
+    if "n_signals" in metrics:
+        return int(metrics.get("n_signals") or 0)
+    return int(block.get("n_decisions") or 0)
+
+
+def _symbol_signal_count(payload: dict) -> int:
+    splits = _split_names(payload)
+    if splits:
+        return sum(_n_signals_from_block(payload[name]) for name in splits)
+    return _n_signals_from_block(payload)
+
+
+def _compact_symbol_view(symbol: str, payload: dict) -> dict:
+    """Compact per-symbol metrics for quick V7→V8 analysis."""
+    splits = _split_names(payload)
+    if splits:
+        n_signals = {name: _n_signals_from_block(payload[name]) for name in splits}
+        expectancy = {
+            name: (payload[name].get("metrics") or {}).get("expectancy_R")
+            for name in splits
+        }
+        winrate = {
+            name: (payload[name].get("metrics") or {}).get("win_rate")
+            for name in splits
+        }
+    else:
+        metrics = payload.get("metrics") or {}
+        n_signals = {"ALL": int(metrics.get("n_signals") or payload.get("n_decisions") or 0)}
+        expectancy = {"ALL": metrics.get("expectancy_R")}
+        winrate = {"ALL": metrics.get("win_rate")}
+    return {
+        "symbol": symbol,
+        "n_signals": n_signals,
+        "expectancy": expectancy,
+        "winrate": winrate,
+        "includes_oos_metrics": bool(payload.get("includes_oos_metrics")),
+    }
+
+
+def _build_summary(by_symbol: dict) -> dict:
+    total_signals = 0
+    symbols_with_signals = 0
+    for payload in by_symbol.values():
+        n = _symbol_signal_count(payload)
+        total_signals += n
+        if n > 0:
+            symbols_with_signals += 1
+    return {
+        "total_symbols": len(by_symbol),
+        "symbols_with_signals": symbols_with_signals,
+        "total_signals": total_signals,
+    }
+
+
 def cmd_backtest(args: argparse.Namespace) -> int:
     cfg = StrategyConfig.from_yaml(args.config)
-    bundle = _bundle_from_synthetic(args.symbol, args.bars, args.seed)
-    if args.splits:
-        # P0: default calibration isolation — TRAIN/VAL only
-        results = run_split_backtests(bundle, cfg, include_oos=False)
-        payload = {
-            name: {
+    include_oos = bool(getattr(args, "include_oos", False))
+    compact = bool(getattr(args, "compact", False))
+    print("BACKTEST INCLUDE OOS:", include_oos)
+
+    symbols = [
+        s.strip()
+        for s in (args.symbols if hasattr(args, "symbols") and args.symbols else args.symbol).split(",")
+        if s.strip()
+    ]
+    if not symbols:
+        symbols = [str(args.symbol)]
+
+    by_symbol: dict = {}
+    for symbol in symbols:
+        print(f"===== {symbol} =====")
+        bundle = _bundle_from_synthetic(symbol, args.bars, args.seed)
+        if args.splits:
+            results = run_split_backtests(
+                bundle,
+                cfg,
+                include_oos=include_oos,
+            )
+            payload: dict = {
+                name: {
+                    "metrics": res.metrics.to_dict(),
+                    "n_decisions": len(res.decisions),
+                    "config_hash": res.config_hash,
+                    "meta": {k: v for k, v in res.meta.items() if k != "val_monte_carlo"}
+                    | {"val_monte_carlo": res.meta.get("val_monte_carlo")},
+                }
+                for name, res in results.items()
+            }
+            payload["includes_oos_metrics"] = include_oos and ("OOS" in results)
+        else:
+            res = run_backtest_on_bundle(bundle, cfg)
+            payload = {
                 "metrics": res.metrics.to_dict(),
                 "n_decisions": len(res.decisions),
                 "config_hash": res.config_hash,
-                "meta": {k: v for k, v in res.meta.items() if k != "val_monte_carlo"}
-                | {"val_monte_carlo": res.meta.get("val_monte_carlo")},
+                "meta": res.meta,
+                "includes_oos_metrics": False,
             }
-            for name, res in results.items()
-        }
-        payload["includes_oos_metrics"] = False
+        by_symbol[symbol] = payload
+
+    summary = _build_summary(by_symbol)
+
+    if compact:
+        compact_rows = [
+            _compact_symbol_view(sym, payload) for sym, payload in by_symbol.items()
+        ]
+        out = {"summary": summary, "symbols": compact_rows}
+        print(json.dumps(out, indent=2, default=str))
+        return 0
+
+    if len(by_symbol) == 1:
+        # Single-symbol: keep flat payload (JSON-compatible, unchanged shape)
+        print(json.dumps(next(iter(by_symbol.values())), indent=2, default=str))
     else:
-        res = run_backtest_on_bundle(bundle, cfg)
-        payload = {
-            "metrics": res.metrics.to_dict(),
-            "n_decisions": len(res.decisions),
-            "config_hash": res.config_hash,
-            "meta": res.meta,
-        }
-    print(json.dumps(payload, indent=2, default=str))
+        print(
+            json.dumps(
+                {"summary": summary, "symbols": by_symbol},
+                indent=2,
+                default=str,
+            )
+        )
     return 0
 
 
@@ -120,25 +223,44 @@ def cmd_walk_forward(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        description="Trading Signal Bot (signals-only). Never places orders."
+    """ONLY parser factory in this project entrypoint."""
+    parser = argparse.ArgumentParser(
+        prog="main.py",
+        description="Trading Signal Bot (signals-only). Never places orders.",
     )
-    p.add_argument(
-        "--mode",
-        choices=["backtest", "calibrate", "oos_eval", "paper", "live_signals"],
-        default="backtest",
+    parser.add_argument(
+        "--symbols",
+        default="",
+        help="(global) Comma-separated symbols; prefer: backtest --symbols ...",
     )
-    p.add_argument("--config", default="config/strategy_v1.yaml")
-    sub = p.add_subparsers(dest="command")
+    sub = parser.add_subparsers(dest="command", required=True)
 
-    b = sub.add_parser("backtest", help="Run backtest engine (ÉTAPE 4)")
-    b.add_argument("--symbol", default="EURUSD")
+    # backtest — home for --symbols and --include-oos
+    b = sub.add_parser("backtest", help="Run backtest engine")
+    b.add_argument("--symbol", default="EURUSD", help="Single symbol")
+    b.add_argument(
+        "--symbols",
+        default="",
+        help="Comma-separated symbols (overrides --symbol)",
+    )
     b.add_argument("--bars", type=int, default=3000)
     b.add_argument("--seed", type=int, default=42)
     b.add_argument(
         "--splits",
         action="store_true",
         help="Run TRAIN/VAL calibration splits (OOS excluded by default)",
+    )
+    b.add_argument(
+        "--include-oos",
+        dest="include_oos",
+        action="store_true",
+        help="Include OOS results in split backtests",
+    )
+    b.add_argument(
+        "--compact",
+        dest="compact",
+        action="store_true",
+        help="Print compact per-symbol summary (n_signals / expectancy / winrate)",
     )
     b.add_argument("--config", default="config/strategy_v1.yaml")
     b.set_defaults(func=cmd_backtest)
@@ -165,48 +287,38 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--config", default="config/strategy_v1.yaml")
     w.set_defaults(func=cmd_walk_forward)
 
-    return p
+    return parser
+
+
+def _normalize_argv(argv: list[str] | None) -> list[str] | None:
+    """
+    Force subcommand-first order so flags like --symbols are attached to
+    the backtest subparser even if the user put them before the command.
+    Example:  --symbols EURUSD backtest  →  backtest --symbols EURUSD
+    """
+    raw = list(sys.argv[1:] if argv is None else argv)
+    cmd_idx = next((i for i, a in enumerate(raw) if a in _COMMANDS), None)
+    if cmd_idx is None or cmd_idx == 0:
+        return None if argv is None else raw
+    cmd = raw[cmd_idx]
+    return [cmd, *raw[:cmd_idx], *raw[cmd_idx + 1 :]]
 
 
 def main(argv: list[str] | None = None) -> int:
+    print("USING FILE:", __file__)
     parser = build_parser()
-    args = parser.parse_args(argv)
-    if args.command is None:
-        if args.mode == "backtest":
-            return cmd_backtest(
-                argparse.Namespace(
-                    symbol="EURUSD",
-                    bars=3000,
-                    seed=42,
-                    splits=False,
-                    config=args.config,
-                )
-            )
-        if args.mode == "calibrate":
-            return cmd_calibrate(
-                argparse.Namespace(
-                    symbol="EURUSD",
-                    bars=3000,
-                    seed=42,
-                    config=args.config,
-                    locked_out="config/strategy_v1_locked.yaml",
-                )
-            )
-        if args.mode == "oos_eval":
-            return cmd_oos_eval(
-                argparse.Namespace(
-                    symbol="EURUSD",
-                    bars=3000,
-                    seed=42,
-                    locked_config="config/strategy_v1_locked.yaml",
-                )
-            )
-        parser.print_help()
-        print(
-            "\nNote: paper/live/notifications not enabled in ÉTAPE 4 "
-            "(backtest engine only). Use calibrate then oos-eval for isolation."
-        )
-        return 0
+    normalized = _normalize_argv(argv)
+    args = parser.parse_args(normalized)
+    # If --symbols was passed globally before subcommand, forward to backtest
+    if (
+        getattr(args, "command", None) == "backtest"
+        and not str(getattr(args, "symbols", "") or "").strip()
+    ):
+        # Root parser may have consumed symbols when placed before subcommand
+        root_ns, _ = parser.parse_known_args(normalized)
+        if str(getattr(root_ns, "symbols", "") or "").strip():
+            args.symbols = root_ns.symbols
+    print("ARGS:", vars(args))
     return int(args.func(args))
 
 
