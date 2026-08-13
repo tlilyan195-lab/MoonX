@@ -126,15 +126,11 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     if live_safe:
         print("V9 LIVE SAFE MODE ENABLED")
 
-    symbols = [
-        s.strip()
-        for s in (
-            args.symbols
-            if hasattr(args, "symbols") and args.symbols
-            else args.symbol
-        ).split(",")
-        if s.strip()
-    ]
+    symbols_raw = getattr(args, "symbols", None)
+    if symbols_raw:
+        symbols = [s.strip() for s in str(symbols_raw).split(",") if s.strip()]
+    else:
+        symbols = [str(args.symbol)]
     if not symbols:
         symbols = [str(args.symbol)]
 
@@ -431,90 +427,89 @@ def build_parser() -> argparse.ArgumentParser:
         prog="main.py",
         description="Trading Signal Bot (signals-only). Never places orders.",
     )
-    parser.add_argument(
-        "--symbols",
-        default="",
-        help="(global) Comma-separated symbols; prefer: backtest --symbols ...",
-    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # Shared V9 flag — attached to backtest + paper_live via parents=
-    live_safe_parent = argparse.ArgumentParser(add_help=False)
-    live_safe_parent.add_argument(
+    # ---------- backtest ----------
+    backtest = subparsers.add_parser("backtest", help="Run backtest engine")
+    backtest.add_argument("--symbol", type=str, default="EURUSD", help="Single symbol")
+    backtest.add_argument(
+        "--symbols",
+        type=str,
+        default=None,
+        help="Comma-separated symbols (overrides --symbol)",
+    )
+    backtest.add_argument(
         "--live-safe",
         action="store_true",
         help="Enable V9 Live Safe risk & filtering layer",
     )
-
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    # backtest — home for --symbols, --include-oos, --live-safe
-    b = sub.add_parser(
-        "backtest",
-        parents=[live_safe_parent],
-        help="Run backtest engine",
-    )
-    b.add_argument("--symbol", default="EURUSD", help="Single symbol")
-    b.add_argument(
-        "--symbols",
-        default="",
-        help="Comma-separated symbols (overrides --symbol)",
-    )
-    b.add_argument("--bars", type=int, default=3000)
-    b.add_argument("--seed", type=int, default=42)
-    b.add_argument(
+    backtest.add_argument("--bars", type=int, default=3000)
+    backtest.add_argument("--seed", type=int, default=42)
+    backtest.add_argument(
         "--splits",
         action="store_true",
         help="Run TRAIN/VAL calibration splits (OOS excluded by default)",
     )
-    b.add_argument(
+    backtest.add_argument(
         "--include-oos",
         dest="include_oos",
         action="store_true",
         help="Include OOS results in split backtests",
     )
-    b.add_argument(
+    backtest.add_argument(
         "--compact",
         dest="compact",
         action="store_true",
         help="Print compact per-symbol summary (n_signals / expectancy / winrate)",
     )
-    b.add_argument("--config", default="config/strategy_v1.yaml")
-    b.set_defaults(func=cmd_backtest)
+    backtest.add_argument("--config", default="config/strategy_v1.yaml")
+    backtest.set_defaults(func=cmd_backtest)
 
-    c = sub.add_parser("calibrate", help="TRAIN/VAL calibration + lock config (no OOS)")
-    c.add_argument("--symbol", default="EURUSD")
-    c.add_argument("--bars", type=int, default=3000)
-    c.add_argument("--seed", type=int, default=42)
-    c.add_argument("--config", default="config/strategy_v1.yaml")
-    c.add_argument("--locked-out", default="config/strategy_v1_locked.yaml")
-    c.set_defaults(func=cmd_calibrate)
-
-    o = sub.add_parser("oos-eval", help="Evaluate locked config on OOS only")
-    o.add_argument("--symbol", default="EURUSD")
-    o.add_argument("--bars", type=int, default=3000)
-    o.add_argument("--seed", type=int, default=42)
-    o.add_argument("--locked-config", default="config/strategy_v1_locked.yaml")
-    o.set_defaults(func=cmd_oos_eval)
-
-    w = sub.add_parser("walk-forward", help="Walk-forward TRAIN→VAL folds (no OOS)")
-    w.add_argument("--symbol", default="EURUSD")
-    w.add_argument("--bars", type=int, default=3000)
-    w.add_argument("--seed", type=int, default=42)
-    w.add_argument("--config", default="config/strategy_v1.yaml")
-    w.set_defaults(func=cmd_walk_forward)
-
-    p = sub.add_parser(
-        "paper_live",
-        parents=[live_safe_parent],
-        help="V9 paper trading mode (causal, LIVE SAFE)",
+    # ---------- calibrate ----------
+    calibrate = subparsers.add_parser(
+        "calibrate", help="TRAIN/VAL calibration + lock config (no OOS)"
     )
-    p.add_argument("--symbol", default="EURUSD")
-    p.add_argument("--bars", type=int, default=3000)
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--capital", type=float, default=100000.0)
-    p.add_argument("--warmup", type=int, default=500)
-    p.add_argument("--config", default="config/strategy_v1.yaml")
-    p.set_defaults(func=cmd_paper_live)
+    calibrate.add_argument("--symbol", type=str, default="EURUSD")
+    calibrate.add_argument("--bars", type=int, default=3000)
+    calibrate.add_argument("--seed", type=int, default=42)
+    calibrate.add_argument("--config", default="config/strategy_v1.yaml")
+    calibrate.add_argument("--locked-out", default="config/strategy_v1_locked.yaml")
+    calibrate.set_defaults(func=cmd_calibrate)
+
+    # ---------- oos-eval ----------
+    oos = subparsers.add_parser("oos-eval", help="Evaluate locked config on OOS only")
+    oos.add_argument("--symbol", type=str, default="EURUSD")
+    oos.add_argument("--bars", type=int, default=3000)
+    oos.add_argument("--seed", type=int, default=42)
+    oos.add_argument("--locked-config", default="config/strategy_v1_locked.yaml")
+    oos.set_defaults(func=cmd_oos_eval)
+
+    # ---------- walk-forward ----------
+    wf = subparsers.add_parser(
+        "walk-forward", help="Walk-forward TRAIN→VAL folds (no OOS)"
+    )
+    wf.add_argument("--symbol", type=str, default="EURUSD")
+    wf.add_argument("--bars", type=int, default=3000)
+    wf.add_argument("--seed", type=int, default=42)
+    wf.add_argument("--config", default="config/strategy_v1.yaml")
+    wf.set_defaults(func=cmd_walk_forward)
+
+    # ---------- paper_live ----------
+    paper = subparsers.add_parser(
+        "paper_live", help="V9 paper trading mode (causal, LIVE SAFE)"
+    )
+    paper.add_argument("--symbol", type=str, required=True, help="Symbol to paper trade")
+    paper.add_argument(
+        "--live-safe",
+        action="store_true",
+        help="Enable V9 Live Safe risk & filtering layer",
+    )
+    paper.add_argument("--bars", type=int, default=3000)
+    paper.add_argument("--seed", type=int, default=42)
+    paper.add_argument("--capital", type=float, default=100000.0)
+    paper.add_argument("--warmup", type=int, default=500)
+    paper.add_argument("--config", default="config/strategy_v1.yaml")
+    paper.set_defaults(func=cmd_paper_live)
 
     return parser
 
@@ -533,29 +528,20 @@ def _normalize_argv(argv: list[str] | None) -> list[str] | None:
     return [cmd, *raw[:cmd_idx], *raw[cmd_idx + 1 :]]
 
 
-def _backtest_has_live_safe(parser: argparse.ArgumentParser) -> bool:
-    choices = parser._subparsers._group_actions[0].choices  # type: ignore[attr-defined]
-    bt = choices["backtest"]
-    return "--live-safe" in bt._option_string_actions
-
-
 def main(argv: list[str] | None = None) -> int:
     print("USING FILE:", __file__)
     parser = build_parser()
-    if not _backtest_has_live_safe(parser):
-        raise RuntimeError("--live-safe failed to register on backtest subparser")
+    # Hard assert: backtest must expose --symbols and --live-safe
+    bt = parser._subparsers._group_actions[0].choices["backtest"]  # type: ignore[attr-defined]
+    missing = [f for f in ("--symbols", "--live-safe") if f not in bt._option_string_actions]
+    if missing:
+        raise RuntimeError(f"backtest parser missing flags: {missing}")
+    if "paper_live" not in parser._subparsers._group_actions[0].choices:  # type: ignore[attr-defined]
+        raise RuntimeError("paper_live subcommand missing")
     print("V9 LIVE SAFE CLI READY")
+
     normalized = _normalize_argv(argv)
     args = parser.parse_args(normalized)
-    # If --symbols was passed globally before subcommand, forward to backtest
-    if (
-        getattr(args, "command", None) == "backtest"
-        and not str(getattr(args, "symbols", "") or "").strip()
-    ):
-        root_ns, _ = parser.parse_known_args(normalized)
-        if str(getattr(root_ns, "symbols", "") or "").strip():
-            args.symbols = root_ns.symbols
-    # Manual fallback: if argv contained --live-safe, force the attribute
     raw = list(sys.argv[1:] if argv is None else argv)
     if "--live-safe" in raw:
         args.live_safe = True
