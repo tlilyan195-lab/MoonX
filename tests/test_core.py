@@ -177,7 +177,12 @@ def test_evaluate_deterministic():
         "EURUSD", "FX", frames["5M"], frames["15M"], frames["1H"], frames["4H"]
     )
     ts = bundle.m5.df.index[1200]
+    # Engine keeps per-symbol cooldown state; reset between calls for purity check
+    from trading_signal_bot.strategy import engine as eng
+
+    eng._LAST_SIGNAL.clear()
     a = evaluate(bundle, ts, cfg)
+    eng._LAST_SIGNAL.clear()
     b = evaluate(bundle, ts, cfg)
     assert a.decision == b.decision
     assert a.category == b.category
