@@ -1,0 +1,131 @@
+{
+  "QUANTGIST_FREE_PILOT": "FAIL",
+  "3Y_HISTORY": "DOC_ONLY",
+  "LOOKAHEAD_SAFETY": "FAIL",
+  "STARTER_PRICE_DOC": "$19/month (https://quantgist.com/pricing.md); JSON-LD conflict $29 on /terms",
+  "PAYMENT_RECOMMENDATION": "NO",
+  "sections": {
+    "calendar_range": {
+      "http_status": 401,
+      "n_events": 0,
+      "top_level_body_keys": [
+        "detail",
+        "error",
+        "request_id"
+      ],
+      "event_field_union": [],
+      "event_field_counts": {},
+      "sample_event": null,
+      "ok_http": false
+    },
+    "history_probe_2024": {
+      "http_status": 401,
+      "n_events": 0,
+      "top_level_body_keys": [
+        "detail",
+        "error",
+        "request_id"
+      ],
+      "event_field_union": [],
+      "event_field_counts": {},
+      "sample_event": null,
+      "ok_http": false
+    },
+    "events_backtest_safe": {
+      "http_status": 401,
+      "n_events": 0,
+      "top_level_body_keys": [
+        "detail",
+        "error",
+        "request_id"
+      ],
+      "event_field_union": [],
+      "event_field_counts": {},
+      "sample_event": null,
+      "ok_http": false
+    }
+  },
+  "schema_fields": {
+    "id": "ABSENT",
+    "event_id": "ABSENT",
+    "canonical_id": "ABSENT",
+    "release_time": "ABSENT",
+    "date": "ABSENT",
+    "timestamp": "ABSENT",
+    "time": "ABSENT",
+    "timezone": "ABSENT",
+    "tz": "ABSENT",
+    "currency": "ABSENT",
+    "country": "ABSENT",
+    "event": "ABSENT",
+    "title": "ABSENT",
+    "name": "ABSENT",
+    "impact": "ABSENT",
+    "importance": "ABSENT",
+    "impact_score": "ABSENT",
+    "first_print": "ABSENT",
+    "revision_seq": "ABSENT",
+    "actual": "ABSENT",
+    "forecast": "ABSENT",
+    "previous": "ABSENT"
+  },
+  "present_fields": [],
+  "currencies": {},
+  "countries": {},
+  "impacts": {},
+  "high_impact_by_currency": {
+    "EUR": 0,
+    "GBP": 0,
+    "JPY": 0,
+    "USD": 0
+  },
+  "high_impact_coverage": {
+    "EUR": false,
+    "GBP": false,
+    "JPY": false,
+    "USD": false
+  },
+  "timestamp_notes": [],
+  "oldest_ts": null,
+  "newest_ts": null,
+  "event_ids_sample": [],
+  "titles_sample": [],
+  "pagination": {
+    "calendar_range": {},
+    "history_probe_2024": {},
+    "events_backtest_safe": {}
+  },
+  "history_api": {
+    "probe_http_status": 401,
+    "probe_n_events": 0,
+    "oldest_timestamp_in_sample": null,
+    "newest_timestamp_in_sample": null,
+    "three_year_confirmed_by_api": false,
+    "note": "Free pilot sample must NOT be treated as 3y confirmation. 3y remains DOC_ONLY until Starter (or equivalent) is API-verified."
+  },
+  "lookahead": {
+    "backtest_safe_section_present": true,
+    "backtest_safe_http": 401,
+    "backtest_safe_n_events": 0,
+    "first_print_field_seen": false,
+    "first_print_values_sample": [],
+    "revision_seq_field_seen": false,
+    "revision_seq_values_sample": [],
+    "verdict": "FAIL",
+    "note": "backtest_safe not available on this plan/key."
+  },
+  "payment_gate": {
+    "history_ge_3y_api_confirmed": false,
+    "eur_usd_gbp_jpy_high_impact": false,
+    "timestamp_reliable": false,
+    "impact_exploitable": false,
+    "lookahead_ok": false,
+    "cost_le_25": true,
+    "PAYMENT_RECOMMENDATION": "NO",
+    "why": "Free pilot must not unlock payment. 3y history not API-confirmed on Free. Recommend payment only after Starter (or \u2264$25 plan) API proves \u22653y depth plus high-impact EUR/USD/GBP/JPY and look-ahead-safe reconstruction. High-impact coverage incomplete on this sample. Look-ahead safety not confirmed."
+  },
+  "n_events_total": 0,
+  "currencies_needed_subset_seen": false,
+  "PROVIDER_STATUS": "BLOCKED_AUTH",
+  "note": "Do not pay QuantGist; do not regenerate keys; re-evaluate later separately. Continue with FMP Free pilot."
+}

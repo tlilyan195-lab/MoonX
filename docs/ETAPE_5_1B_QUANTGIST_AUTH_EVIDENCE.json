@@ -1,0 +1,21 @@
+[
+  {
+    "path": "/v1/health",
+    "status": 200,
+    "body": {
+      "status": "ok",
+      "service": "QuantGist API",
+      "timestamp": "2026-08-06T05:55:22.634365+00:00",
+      "uptime_seconds": 318873
+    }
+  },
+  {
+    "path": "/v1/calendar/range?start=2025-12-01&end=2025-12-07&currencies=USD,EUR&impact=high&limit=5",
+    "status": 401,
+    "body": {
+      "error": "authentication_failed",
+      "detail": "Authentication required. Provide your API key in the X-API-Key header.",
+      "request_id": "31eabffd-e7cb-4c13-bc99-b30553e7d5b5"
+    }
+  }
+]

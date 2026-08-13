@@ -1,0 +1,26 @@
+{
+  "calendar_range": {
+    "status": 401,
+    "body": {
+      "error": "authentication_failed",
+      "detail": "API key not found or has been revoked",
+      "request_id": "2a0ea6b9-dd59-4b37-89b6-4631bc0820cf"
+    }
+  },
+  "history_probe_2024": {
+    "status": 401,
+    "body": {
+      "error": "authentication_failed",
+      "detail": "API key not found or has been revoked",
+      "request_id": "d9c7ddaa-686a-4040-87f7-0d6ff105333e"
+    }
+  },
+  "events_backtest_safe": {
+    "status": 401,
+    "body": {
+      "error": "authentication_failed",
+      "detail": "API key not found or has been revoked",
+      "request_id": "e961edb0-8aad-46e5-96c2-7c4245f6009e"
+    }
+  }
+}
