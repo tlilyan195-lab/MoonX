@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -38,6 +39,14 @@ def _bundle_from_synthetic(symbol: str, n_5m: int, seed: int) -> MultiTimeframeB
         h1=frames["1H"],
         h4=frames["4H"],
     )
+
+
+def _m5_close_fingerprint(bundle: MultiTimeframeBundle) -> tuple[str, list[float]]:
+    """SHA256 of M5 closes + first 3 closes for per-symbol data identity checks."""
+    closes = bundle.m5.df["close"].astype(float).to_numpy()
+    digest = hashlib.sha256(closes.tobytes()).hexdigest()[:16]
+    first3 = [float(x) for x in closes[:3]]
+    return digest, first3
 
 
 def _split_names(payload: dict) -> list[str]:
@@ -115,9 +124,21 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         symbols = [str(args.symbol)]
 
     by_symbol: dict = {}
+    seen_data_hashes: dict[str, str] = {}
     for symbol in symbols:
         print(f"===== {symbol} =====")
         bundle = _bundle_from_synthetic(symbol, args.bars, args.seed)
+        # Per-symbol data identity: independent OHLC series required
+        data_hash, first3 = _m5_close_fingerprint(bundle)
+        print(f"DATA {symbol}: hash={data_hash} first3_closes={first3}")
+        if data_hash in seen_data_hashes:
+            other = seen_data_hashes[data_hash]
+            raise AssertionError(
+                f"Identical OHLC series for {symbol} and {other} "
+                f"(hash={data_hash}). Symbol routing/data loading is broken."
+            )
+        seen_data_hashes[data_hash] = symbol
+        assert bundle.symbol == symbol, f"bundle.symbol={bundle.symbol!r} != {symbol!r}"
         if args.splits:
             results = run_split_backtests(
                 bundle,

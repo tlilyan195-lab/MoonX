@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import zlib
 
 import numpy as np
 import pandas as pd
@@ -18,27 +19,54 @@ TF_RULES: dict[str, str] = {
 }
 
 
+def _effective_seed(symbol: str, seed: int) -> int:
+    """Mix symbol into seed so identical base seeds still yield independent series."""
+    return int(seed) ^ (zlib.adler32(symbol.encode("utf-8")) & 0xFFFFFFFF)
+
+
+def _asset_defaults(symbol: str) -> tuple[float, float]:
+    """Return (start_price, volatility) defaults by asset class."""
+    s = symbol.upper()
+    if s.endswith("USDT") or (
+        s.endswith("USD") and any(x in s for x in ("BTC", "ETH", "SOL"))
+    ):
+        if "BTC" in s:
+            return 40000.0, 0.002
+        if "ETH" in s:
+            return 3000.0, 0.002
+        return 100.0, 0.002
+    if s.startswith("XAU"):
+        return 2000.0, 0.0012
+    return 1.1000, 0.0008
+
+
 def generate_synthetic_ohlcv(
     symbol: str,
     timeframe: Timeframe,
     n_bars: int,
     start: str | pd.Timestamp = "2024-01-01 00:00:00+00:00",
     seed: int = 42,
-    start_price: float = 1.1000,
-    volatility: float = 0.0008,
+    start_price: float | None = None,
+    volatility: float | None = None,
 ) -> OHLCVFrame:
-    """Deterministic random-walk OHLC for unit/integration tests."""
-    rng = np.random.default_rng(seed)
+    """Deterministic random-walk OHLC for unit/integration tests.
+
+    Series are independent per ``symbol`` even when the same base ``seed`` is used.
+    """
+    default_sp, default_vol = _asset_defaults(symbol)
+    sp = default_sp if start_price is None else float(start_price)
+    vol = default_vol if volatility is None else float(volatility)
+    rng = np.random.default_rng(_effective_seed(symbol, seed))
     start_ts = pd.Timestamp(start)
     if start_ts.tzinfo is None:
         start_ts = start_ts.tz_localize("UTC")
     idx = pd.date_range(start=start_ts, periods=n_bars, freq=TF_RULES[timeframe], tz="UTC")
     # Use close times as index (end of each bar).
-    rets = rng.normal(0.0, volatility, size=n_bars)
-    close = start_price * np.cumprod(1.0 + rets)
+    rets = rng.normal(0.0, vol, size=n_bars)
+    close = sp * np.cumprod(1.0 + rets)
     open_ = np.roll(close, 1)
-    open_[0] = start_price
-    wick = np.abs(rng.normal(0.0, volatility * start_price, size=n_bars))
+    open_[0] = sp
+    wick = np.abs(rng.normal(0.0, vol * sp, size=n_bars))
     high = np.maximum(open_, close) + wick
     low = np.minimum(open_, close) - wick
     volume = rng.uniform(100, 1000, size=n_bars)
@@ -69,8 +97,8 @@ def make_mtf_synthetic(
     symbol: str,
     n_5m: int = 2000,
     seed: int = 42,
-    start_price: float = 1.10,
-    volatility: float = 0.0008,
+    start_price: float | None = None,
+    volatility: float | None = None,
 ) -> dict[str, OHLCVFrame]:
     m5 = generate_synthetic_ohlcv(
         symbol, "5M", n_5m, seed=seed, start_price=start_price, volatility=volatility
