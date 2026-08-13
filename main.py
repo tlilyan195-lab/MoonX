@@ -123,6 +123,8 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     live_cfg = LiveSafeConfig()
     print("BACKTEST INCLUDE OOS:", include_oos)
     print("LIVE SAFE:", live_safe)
+    if live_safe:
+        print("V9 LIVE SAFE MODE ENABLED")
 
     symbols = [
         s.strip()
@@ -423,9 +425,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="(global) Comma-separated symbols; prefer: backtest --symbols ...",
     )
+    parser.add_argument(
+        "--live-safe",
+        dest="live_safe",
+        action="store_true",
+        help="(global) Enable V9 LIVE SAFE; prefer: backtest --live-safe",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # backtest — home for --symbols and --include-oos
+    # backtest — home for --symbols, --include-oos, --live-safe
     b = sub.add_parser("backtest", help="Run backtest engine")
     b.add_argument("--symbol", default="EURUSD", help="Single symbol")
     b.add_argument(
@@ -523,6 +531,13 @@ def main(argv: list[str] | None = None) -> int:
         root_ns, _ = parser.parse_known_args(normalized)
         if str(getattr(root_ns, "symbols", "") or "").strip():
             args.symbols = root_ns.symbols
+    # Forward global --live-safe onto backtest if subparser missed it
+    if getattr(args, "command", None) == "backtest" and not bool(
+        getattr(args, "live_safe", False)
+    ):
+        root_ns, _ = parser.parse_known_args(normalized)
+        if bool(getattr(root_ns, "live_safe", False)):
+            args.live_safe = True
     print("ARGS:", vars(args))
     return int(args.func(args))
 
