@@ -430,40 +430,31 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # ---------- backtest ----------
-    backtest = subparsers.add_parser("backtest", help="Run backtest engine")
-    backtest.add_argument("--symbol", type=str, default="EURUSD", help="Single symbol")
-    backtest.add_argument(
-        "--symbols",
-        type=str,
-        default=None,
-        help="Comma-separated symbols (overrides --symbol)",
-    )
-    backtest.add_argument(
-        "--live-safe",
-        action="store_true",
-        help="Enable V9 Live Safe risk & filtering layer",
-    )
-    backtest.add_argument("--bars", type=int, default=3000)
-    backtest.add_argument("--seed", type=int, default=42)
-    backtest.add_argument(
+    backtest_parser = subparsers.add_parser("backtest", help="Run backtest engine")
+    backtest_parser.add_argument("--symbol", type=str, default="EURUSD", help="Single symbol")
+    backtest_parser.add_argument("--symbols", type=str, default=None, help="Comma separated symbols")
+    backtest_parser.add_argument("--live-safe", action="store_true", help="Enable V9 live safe filters")
+    backtest_parser.add_argument("--bars", type=int, default=3000)
+    backtest_parser.add_argument("--seed", type=int, default=42)
+    backtest_parser.add_argument(
         "--splits",
         action="store_true",
         help="Run TRAIN/VAL calibration splits (OOS excluded by default)",
     )
-    backtest.add_argument(
+    backtest_parser.add_argument(
         "--include-oos",
         dest="include_oos",
         action="store_true",
         help="Include OOS results in split backtests",
     )
-    backtest.add_argument(
+    backtest_parser.add_argument(
         "--compact",
         dest="compact",
         action="store_true",
         help="Print compact per-symbol summary (n_signals / expectancy / winrate)",
     )
-    backtest.add_argument("--config", default="config/strategy_v1.yaml")
-    backtest.set_defaults(func=cmd_backtest)
+    backtest_parser.add_argument("--config", default="config/strategy_v1.yaml")
+    backtest_parser.set_defaults(func=cmd_backtest)
 
     # ---------- calibrate ----------
     calibrate = subparsers.add_parser(
