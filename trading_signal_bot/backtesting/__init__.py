@@ -31,6 +31,8 @@ from trading_signal_bot.backtesting.splits import (
 )
 from trading_signal_bot.config import StrategyConfig, config_hash
 from trading_signal_bot.data import AssetClass, MultiTimeframeBundle
+from trading_signal_bot.live_safe.filters import LiveSafeConfig, apply_trade_filters
+from trading_signal_bot.live_safe.risk import LiveRiskManager
 from trading_signal_bot.signals import SignalDecision, SignalDeduper
 from trading_signal_bot.strategy.engine import evaluate
 
@@ -123,10 +125,17 @@ def run_backtest_on_bundle(
     news_blackout_ts: set[pd.Timestamp] | None = None,
     regime_thresholds: RegimeThresholds | None = None,
     warmup_bars: int | None = None,
+    live_safe: bool = False,
+    live_cfg: LiveSafeConfig | None = None,
+    by_regime: dict[str, dict[str, float]] | None = None,
+    risk_mgr: LiveRiskManager | None = None,
 ) -> BacktestResult:
     """
     Iterate 5M closes, evaluate strategy, simulate outcomes.
     Outcomes are strictly bounded to `end` (split leakage prevention).
+
+    When ``live_safe=True``, apply V9 post-strategy filters + risk gates
+    without modifying V8 scoring logic.
     """
     df5_full = bundle.m5.df
     df5 = df5_full
@@ -147,6 +156,10 @@ def run_backtest_on_bundle(
     max_hold = _max_hold(cfg, bundle.asset_class)
     atr_period = cfg.atr_period
     w_vol = int(cfg.get("volatility_filter", "W_vol", default=100))
+    live_cfg = live_cfg or LiveSafeConfig()
+    local_risk = risk_mgr if live_safe else None
+    if live_safe and local_risk is None:
+        local_risk = LiveRiskManager(cfg=live_cfg)
 
     # Fit regimes on bars visible up to split start (or full pre-window) if not provided
     if regime_thresholds is None:
@@ -163,7 +176,10 @@ def run_backtest_on_bundle(
     else:
         warmup = min(int(warmup_bars), max(0, len(timestamps) - 1))
 
+    n_live_safe_rejects = 0
     for ts in timestamps[warmup:]:
+        if live_safe and local_risk is not None and local_risk.stopped:
+            break
         blackout = news_blackout_ts is not None and ts in news_blackout_ts
         decision = evaluate(bundle, ts, cfg, news_blackout=blackout)
         if decision.decision == "NO_TRADE":
@@ -174,6 +190,59 @@ def run_backtest_on_bundle(
             decision.meta["suppressed_duplicate"] = True
             decisions.append(decision)
             continue
+
+        regime = label_regime_at(
+            regime_thresholds,
+            bundle.m15.df,
+            bundle.h4.df,
+            decision.ts_utc,
+            atr_period,
+            w_vol,
+        )
+
+        if live_safe:
+            filt = apply_trade_filters(
+                decision,
+                market_regime=regime,
+                by_regime=by_regime,
+                cfg=live_cfg,
+            )
+            risk_gate = local_risk.on_trade_attempt() if local_risk else None
+            if not filt.allowed or (risk_gate is not None and not risk_gate.allowed):
+                n_live_safe_rejects += 1
+                reason = (
+                    filt.decision_reason
+                    if not filt.allowed
+                    else (risk_gate.reason if risk_gate else "risk_block")
+                )
+                decision.meta["live_safe_rejected"] = True
+                decision.meta["live_safe_reason"] = reason
+                decision.meta["confidence_score"] = filt.confidence_score
+                decisions.append(decision)
+                continue
+            decision.meta["live_safe"] = True
+            decision.meta["confidence_score"] = filt.confidence_score
+            decision.meta["decision_reason"] = filt.decision_reason
+            decision.meta["strategy_version_overlay"] = "V9_LIVE_SAFE"
+            if risk_gate is not None:
+                decision.meta["risk_pct"] = risk_gate.risk_pct
+                decision.meta["drawdown_r"] = risk_gate.drawdown_r
+            print(
+                {
+                    "event": "live_safe_trade",
+                    "symbol": decision.symbol,
+                    "regime": decision.meta.get("regime"),
+                    "market_regime": regime,
+                    "score": decision.setup_score,
+                    "confidence_score": filt.confidence_score,
+                    "rr": decision.rr1,
+                    "category": decision.category,
+                    "decision_reason": filt.decision_reason,
+                    "risk_pct": decision.meta.get("risk_pct"),
+                },
+                flush=True,
+            )
+
         decisions.append(decision)
 
         entry_idx = int(df5_full.index.get_loc(decision.ts_utc))
@@ -201,14 +270,9 @@ def run_backtest_on_bundle(
                 f"split leakage detected: exit_ts {exit_ts} > split end {end}"
             )
 
-        regime = label_regime_at(
-            regime_thresholds,
-            bundle.m15.df,
-            bundle.h4.df,
-            decision.ts_utc,
-            atr_period,
-            w_vol,
-        )
+        if live_safe and local_risk is not None:
+            local_risk.on_trade_closed(float(pnl))
+
         trades.append(
             SimulatedTrade(
                 signal_id=str(uuid.uuid4()),
@@ -238,17 +302,27 @@ def run_backtest_on_bundle(
 
     _mark_correlated(decisions, pd.Timedelta(hours=2))
     metrics = compute_metrics(trades)
+    meta: dict[str, Any] = {
+        "symbol": bundle.symbol,
+        "n_eval_bars": len(timestamps) - warmup,
+        "split_end": str(end) if end is not None else None,
+        "max_index": max_idx,
+        "live_safe": bool(live_safe),
+        "live_safe_rejects": n_live_safe_rejects,
+    }
+    if live_safe and local_risk is not None:
+        meta["risk"] = {
+            "equity_r": local_risk.equity_r,
+            "drawdown_r": local_risk.drawdown_r,
+            "stopped": local_risk.stopped,
+            "trade_count": local_risk.trade_count,
+        }
     return BacktestResult(
         trades=trades,
         decisions=decisions,
         metrics=metrics,
         config_hash=cfg.hash,
-        meta={
-            "symbol": bundle.symbol,
-            "n_eval_bars": len(timestamps) - warmup,
-            "split_end": str(end) if end is not None else None,
-            "max_index": max_idx,
-        },
+        meta=meta,
     )
 
 
@@ -298,6 +372,8 @@ def run_calibration(
     locked_config_path: str | Path | None = "config/strategy_v1_locked.yaml",
     select_fn: Callable[[BacktestResult, BacktestResult, StrategyConfig], StrategyConfig]
     | None = None,
+    live_safe: bool = False,
+    live_cfg: LiveSafeConfig | None = None,
 ) -> CalibrationResult:
     """
     P0 OOS isolation: calibration uses TRAIN + VAL only.
@@ -314,6 +390,7 @@ def run_calibration(
         cfg.atr_period,
         int(cfg.get("volatility_filter", "W_vol", default=100)),
     )
+    live_cfg = live_cfg or LiveSafeConfig()
 
     train = run_backtest_on_bundle(
         bundle,
@@ -321,6 +398,8 @@ def run_calibration(
         start=splits["TRAIN"].start,
         end=splits["TRAIN"].end,
         regime_thresholds=regimes,
+        live_safe=live_safe,
+        live_cfg=live_cfg,
     )
     train.split_name = "TRAIN"
     val = run_backtest_on_bundle(
@@ -329,6 +408,9 @@ def run_calibration(
         start=splits["VAL"].start,
         end=splits["VAL"].end,
         regime_thresholds=regimes,
+        live_safe=live_safe,
+        live_cfg=live_cfg,
+        by_regime=train.metrics.by_regime,
     )
     val.split_name = "VAL"
 
@@ -361,6 +443,7 @@ def run_calibration(
             "vol_low": regimes.vol_low,
             "vol_high": regimes.vol_high,
         },
+        "live_safe": bool(live_safe),
     }
     train.meta.update(meta)
     val.meta.update(meta)
@@ -382,6 +465,9 @@ def run_oos_eval(
     train_fraction: float = 0.6,
     val_fraction: float = 0.2,
     oos_fraction: float = 0.2,
+    live_safe: bool = False,
+    live_cfg: LiveSafeConfig | None = None,
+    by_regime: dict[str, dict[str, float]] | None = None,
 ) -> BacktestResult:
     """
     Evaluate frozen config on OOS only. Must be called AFTER calibration lock.
@@ -410,6 +496,9 @@ def run_oos_eval(
         start=splits["OOS"].start,
         end=splits["OOS"].end,
         regime_thresholds=regimes,
+        live_safe=live_safe,
+        live_cfg=live_cfg,
+        by_regime=by_regime,
     )
     res.split_name = "OOS"
     res.meta["locked_hash"] = locked_cfg.hash
@@ -434,6 +523,8 @@ def run_split_backtests(
     oos_fraction: float = 0.2,
     freeze_before_oos: bool = True,
     include_oos: bool = False,
+    live_safe: bool = False,
+    live_cfg: LiveSafeConfig | None = None,
 ) -> dict[str, BacktestResult]:
     """
     Backward-compatible helper.
@@ -448,10 +539,19 @@ def run_split_backtests(
         val_fraction,
         oos_fraction,
         locked_config_path=None,
+        live_safe=live_safe,
+        live_cfg=live_cfg,
     )
     out: dict[str, BacktestResult] = {"TRAIN": cal.train, "VAL": cal.val}
     if include_oos:
-        out["OOS"] = run_oos_eval(bundle, cal.locked_config, cal.splits)
+        out["OOS"] = run_oos_eval(
+            bundle,
+            cal.locked_config,
+            cal.splits,
+            live_safe=live_safe,
+            live_cfg=live_cfg,
+            by_regime=cal.train.metrics.by_regime,
+        )
     return out
 
 

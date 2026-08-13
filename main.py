@@ -24,8 +24,14 @@ from trading_signal_bot.backtesting import (  # noqa: E402
 from trading_signal_bot.config import StrategyConfig  # noqa: E402
 from trading_signal_bot.data import MultiTimeframeBundle  # noqa: E402
 from trading_signal_bot.data.providers import make_mtf_synthetic  # noqa: E402
+from trading_signal_bot.live_safe import (  # noqa: E402
+    LiveSafeConfig,
+    check_oos_live_ready,
+    filter_symbol_performance,
+    run_paper_live,
+)
 
-_COMMANDS = ("backtest", "calibrate", "oos-eval", "walk-forward")
+_COMMANDS = ("backtest", "calibrate", "oos-eval", "walk-forward", "paper_live")
 
 
 def _bundle_from_synthetic(symbol: str, n_5m: int, seed: int) -> MultiTimeframeBundle:
@@ -113,7 +119,10 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     cfg = StrategyConfig.from_yaml(args.config)
     include_oos = bool(getattr(args, "include_oos", False))
     compact = bool(getattr(args, "compact", False))
+    live_safe = bool(getattr(args, "live_safe", False))
+    live_cfg = LiveSafeConfig()
     print("BACKTEST INCLUDE OOS:", include_oos)
+    print("LIVE SAFE:", live_safe)
 
     symbols = [
         s.strip()
@@ -124,7 +133,11 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         symbols = [str(args.symbol)]
 
     by_symbol: dict = {}
+    symbol_filter_report: dict = {}
+    allowed_symbols: list[str] = []
     seen_data_hashes: dict[str, str] = {}
+    live_ready_flags: dict[str, bool] = {}
+
     for symbol in symbols:
         print(f"===== {symbol} =====")
         bundle = _bundle_from_synthetic(symbol, args.bars, args.seed)
@@ -144,6 +157,8 @@ def cmd_backtest(args: argparse.Namespace) -> int:
                 bundle,
                 cfg,
                 include_oos=include_oos,
+                live_safe=live_safe,
+                live_cfg=live_cfg,
             )
             payload: dict = {
                 name: {
@@ -156,8 +171,50 @@ def cmd_backtest(args: argparse.Namespace) -> int:
                 for name, res in results.items()
             }
             payload["includes_oos_metrics"] = include_oos and ("OOS" in results)
+
+            # V9 symbol performance filter (VAL metrics; TRAIN fallback if VAL n < 15)
+            val_block = payload.get("VAL") or {}
+            train_block = payload.get("TRAIN") or {}
+            filt = filter_symbol_performance(
+                symbol,
+                val_block.get("metrics") or {},
+                (val_block.get("meta") or {}).get("val_monte_carlo") or {},
+                cfg=live_cfg,
+                train_metrics=train_block.get("metrics") or {},
+            )
+            symbol_filter_report[symbol] = {
+                "allowed": filt.allowed,
+                "reasons": filt.reasons,
+                "val_expectancy_r": filt.val_expectancy_r,
+                "p_exp_le_0": filt.p_exp_le_0,
+                "max_drawdown_r": filt.max_drawdown_r,
+            }
+            print(
+                f"SYMBOL FILTER {symbol}: "
+                f"{'PASS' if filt.allowed else 'REJECT'} {filt.reasons or ''}"
+            )
+            if filt.allowed:
+                allowed_symbols.append(symbol)
+            else:
+                payload["symbol_filter_rejected"] = True
+
+            # OOS live-ready enforcement
+            if include_oos and "OOS" in payload:
+                ready, oos_reasons = check_oos_live_ready(
+                    payload["OOS"].get("metrics") or {}, cfg=live_cfg
+                )
+                live_ready_flags[symbol] = ready
+                payload["live_ready"] = ready
+                payload["live_ready_reasons"] = oos_reasons
+                if not ready:
+                    print("❌ STRATEGY NOT LIVE READY")
+                    print(f"   {symbol}: {oos_reasons}")
+                else:
+                    print(f"✅ LIVE READY: {symbol}")
         else:
-            res = run_backtest_on_bundle(bundle, cfg)
+            res = run_backtest_on_bundle(
+                bundle, cfg, live_safe=live_safe, live_cfg=live_cfg
+            )
             payload = {
                 "metrics": res.metrics.to_dict(),
                 "n_decisions": len(res.decisions),
@@ -165,29 +222,142 @@ def cmd_backtest(args: argparse.Namespace) -> int:
                 "meta": res.meta,
                 "includes_oos_metrics": False,
             }
+            allowed_symbols.append(symbol)
         by_symbol[symbol] = payload
 
     summary = _build_summary(by_symbol)
+    summary["symbol_filter"] = symbol_filter_report
+    summary["allowed_symbols"] = allowed_symbols
+    summary["live_safe"] = live_safe
+    if live_ready_flags:
+        summary["live_ready"] = live_ready_flags
+
+    # Keep only symbols that passed the performance filter when splits were used
+    if args.splits:
+        filtered = {
+            sym: payload
+            for sym, payload in by_symbol.items()
+            if sym in allowed_symbols
+        }
+        rejected = [s for s in by_symbol if s not in allowed_symbols]
+        if rejected:
+            print(f"SYMBOLS EXCLUDED BY FILTER: {rejected}")
+        # Still report rejected symbols in full output via symbol_filter; metrics focus on allowed
+        report_symbols = filtered if filtered else by_symbol
+    else:
+        report_symbols = by_symbol
 
     if compact:
         compact_rows = [
-            _compact_symbol_view(sym, payload) for sym, payload in by_symbol.items()
+            _compact_symbol_view(sym, payload) for sym, payload in report_symbols.items()
         ]
-        out = {"summary": summary, "symbols": compact_rows}
+        out = {
+            "summary": summary,
+            "symbols": compact_rows,
+            "excluded_symbols": [s for s in by_symbol if s not in allowed_symbols]
+            if args.splits
+            else [],
+        }
         print(json.dumps(out, indent=2, default=str))
         return 0
 
-    if len(by_symbol) == 1:
-        # Single-symbol: keep flat payload (JSON-compatible, unchanged shape)
-        print(json.dumps(next(iter(by_symbol.values())), indent=2, default=str))
+    if len(report_symbols) == 1 and not args.splits:
+        print(json.dumps(next(iter(report_symbols.values())), indent=2, default=str))
     else:
         print(
             json.dumps(
-                {"summary": summary, "symbols": by_symbol},
+                {
+                    "summary": summary,
+                    "symbols": report_symbols,
+                    "excluded_symbols": {
+                        s: by_symbol[s] for s in by_symbol if s not in allowed_symbols
+                    }
+                    if args.splits
+                    else {},
+                },
                 indent=2,
                 default=str,
             )
         )
+    return 0
+
+
+def cmd_paper_live(args: argparse.Namespace) -> int:
+    """V9 paper trading mode — causal simulation with LIVE SAFE filters."""
+    cfg = StrategyConfig.from_yaml(args.config)
+    live_cfg = LiveSafeConfig()
+    symbol = str(args.symbol)
+    print(f"PAPER LIVE: {symbol} capital={args.capital}")
+    bundle = _bundle_from_synthetic(symbol, args.bars, args.seed)
+
+    # Optional: pre-fit regime expectancy from TRAIN split (no OOS peeking)
+    by_regime: dict = {}
+    if args.use_train_regimes:
+        splits = run_split_backtests(
+            bundle, cfg, include_oos=False, live_safe=False, live_cfg=live_cfg
+        )
+        by_regime = splits["TRAIN"].metrics.by_regime
+        val = splits["VAL"]
+        filt = filter_symbol_performance(
+            symbol,
+            val.metrics.to_dict(),
+            (val.meta or {}).get("val_monte_carlo") or {},
+            cfg=live_cfg,
+            train_metrics=splits["TRAIN"].metrics.to_dict(),
+        )
+        print(
+            f"SYMBOL FILTER {symbol}: "
+            f"{'PASS' if filt.allowed else 'REJECT'} {filt.reasons or ''}"
+        )
+        if not filt.allowed:
+            print("❌ STRATEGY NOT LIVE READY")
+            print(json.dumps({"symbol_filter": filt.__dict__}, indent=2, default=str))
+            return 1
+
+    result = run_paper_live(
+        bundle,
+        cfg,
+        live_cfg=live_cfg,
+        by_regime=by_regime,
+        capital=float(args.capital),
+        warmup_bars=args.warmup,
+    )
+    print(
+        json.dumps(
+            {
+                "mode": "paper_live",
+                "symbol": symbol,
+                "n_trades": len(result.trades),
+                "n_rejected": len(result.rejected),
+                "risk_summary": {
+                    k: v
+                    for k, v in result.risk_summary.items()
+                    if k != "trades"
+                },
+                "trades": [
+                    {
+                        "entry": t.entry,
+                        "SL": t.sl,
+                        "TP": t.tp,
+                        "RR": t.rr,
+                        "timestamp": t.timestamp,
+                        "direction": t.direction,
+                        "score": t.score,
+                        "confidence_score": t.confidence_score,
+                        "regime": t.regime,
+                        "decision_reason": t.decision_reason,
+                        "outcome": t.outcome,
+                        "pnl_R": t.pnl_r,
+                        "risk_pct": t.risk_pct,
+                    }
+                    for t in result.trades
+                ],
+                "messages": result.messages,
+            },
+            indent=2,
+            default=str,
+        )
+    )
     return 0
 
 
@@ -283,6 +453,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print compact per-symbol summary (n_signals / expectancy / winrate)",
     )
+    b.add_argument(
+        "--live-safe",
+        dest="live_safe",
+        action="store_true",
+        help="Enable V9 LIVE SAFE post-strategy filters + risk gates",
+    )
     b.add_argument("--config", default="config/strategy_v1.yaml")
     b.set_defaults(func=cmd_backtest)
 
@@ -307,6 +483,21 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--seed", type=int, default=42)
     w.add_argument("--config", default="config/strategy_v1.yaml")
     w.set_defaults(func=cmd_walk_forward)
+
+    p = sub.add_parser("paper_live", help="V9 paper trading mode (causal, LIVE SAFE)")
+    p.add_argument("--symbol", default="EURUSD")
+    p.add_argument("--bars", type=int, default=3000)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--capital", type=float, default=100000.0)
+    p.add_argument("--warmup", type=int, default=500)
+    p.add_argument(
+        "--use-train-regimes",
+        dest="use_train_regimes",
+        action="store_true",
+        help="Fit symbol filter + regime expectancy from TRAIN/VAL before paper run",
+    )
+    p.add_argument("--config", default="config/strategy_v1.yaml")
+    p.set_defaults(func=cmd_paper_live)
 
     return parser
 

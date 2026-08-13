@@ -847,20 +847,23 @@ def evaluate(
     if session_valid:
         score += 1
 
-    print(
-        {
-            "ts": ts,
-            "score": score,
-            "rr": rr,
-            "regime": regime,
-            "atr_percentile": atr_percentile,
-            "volatility_state": volatility_state,
-            "cooldown_applied": cooldown_applied,
-            "session_valid": session_valid,
-            "fallback": fallback_entry,
-            "pd": pd_ok,
-        }
-    )
+    import os
+
+    if os.environ.get("STRATEGY_DEBUG", "").strip() in ("1", "true", "TRUE", "yes"):
+        print(
+            {
+                "ts": ts,
+                "score": score,
+                "rr": rr,
+                "regime": regime,
+                "atr_percentile": atr_percentile,
+                "volatility_state": volatility_state,
+                "cooldown_applied": cooldown_applied,
+                "session_valid": session_valid,
+                "fallback": fallback_entry,
+                "pd": pd_ok,
+            }
+        )
 
     common_meta = {
         "regime": regime,
