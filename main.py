@@ -128,7 +128,11 @@ def cmd_backtest(args: argparse.Namespace) -> int:
 
     symbols = [
         s.strip()
-        for s in (args.symbols if hasattr(args, "symbols") and args.symbols else args.symbol).split(",")
+        for s in (
+            args.symbols
+            if hasattr(args, "symbols") and args.symbols
+            else args.symbol
+        ).split(",")
         if s.strip()
     ]
     if not symbols:
@@ -174,7 +178,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
             }
             payload["includes_oos_metrics"] = include_oos and ("OOS" in results)
 
-            # V9 symbol performance filter (VAL metrics; TRAIN fallback if VAL n < 15)
+            # V9 symbol performance filter (always when splits; LIVE SAFE pipeline)
             val_block = payload.get("VAL") or {}
             train_block = payload.get("TRAIN") or {}
             filt = filter_symbol_performance(
@@ -199,6 +203,9 @@ def cmd_backtest(args: argparse.Namespace) -> int:
                 allowed_symbols.append(symbol)
             else:
                 payload["symbol_filter_rejected"] = True
+                if live_safe:
+                    # Strict: when --live-safe, rejected symbols stay excluded
+                    payload["live_safe_symbol_rejected"] = True
 
             # OOS live-ready enforcement
             if include_oos and "OOS" in payload:
@@ -244,7 +251,6 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         rejected = [s for s in by_symbol if s not in allowed_symbols]
         if rejected:
             print(f"SYMBOLS EXCLUDED BY FILTER: {rejected}")
-        # Still report rejected symbols in full output via symbol_filter; metrics focus on allowed
         report_symbols = filtered if filtered else by_symbol
     else:
         report_symbols = by_symbol
@@ -288,12 +294,15 @@ def cmd_paper_live(args: argparse.Namespace) -> int:
     """V9 paper trading mode — causal simulation with LIVE SAFE filters."""
     cfg = StrategyConfig.from_yaml(args.config)
     live_cfg = LiveSafeConfig()
+    # paper_live is always LIVE SAFE; --live-safe is accepted for CLI compatibility
+    live_safe = bool(getattr(args, "live_safe", True))
+    if live_safe:
+        print("V9 LIVE SAFE MODE ENABLED")
     symbol = str(args.symbol)
     print(f"PAPER LIVE: {symbol} capital={args.capital}")
     bundle = _bundle_from_synthetic(symbol, args.bars, args.seed)
 
     # Always fit TRAIN regime stats + symbol performance gate (no OOS peeking)
-    by_regime: dict = {}
     splits = run_split_backtests(
         bundle, cfg, include_oos=False, live_safe=False, live_cfg=live_cfg
     )
@@ -328,6 +337,7 @@ def cmd_paper_live(args: argparse.Namespace) -> int:
             {
                 "mode": "paper_live",
                 "symbol": symbol,
+                "live_safe": live_safe,
                 "n_trades": len(result.trades),
                 "n_rejected": len(result.rejected),
                 "risk_summary": {
@@ -425,10 +435,23 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="(global) Comma-separated symbols; prefer: backtest --symbols ...",
     )
+
+    # Shared V9 flag — attached to backtest + paper_live via parents=
+    live_safe_parent = argparse.ArgumentParser(add_help=False)
+    live_safe_parent.add_argument(
+        "--live-safe",
+        action="store_true",
+        help="Enable V9 Live Safe risk & filtering layer",
+    )
+
     sub = parser.add_subparsers(dest="command", required=True)
 
     # backtest — home for --symbols, --include-oos, --live-safe
-    b = sub.add_parser("backtest", help="Run backtest engine")
+    b = sub.add_parser(
+        "backtest",
+        parents=[live_safe_parent],
+        help="Run backtest engine",
+    )
     b.add_argument("--symbol", default="EURUSD", help="Single symbol")
     b.add_argument(
         "--symbols",
@@ -454,10 +477,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print compact per-symbol summary (n_signals / expectancy / winrate)",
     )
-    # V9 LIVE SAFE — MUST be on backtest subparser (not only global)
-    b.add_argument("--live-safe", action="store_true", help="Enable V9 safety layer")
     b.add_argument("--config", default="config/strategy_v1.yaml")
-    b.set_defaults(func=cmd_backtest, live_safe=False)
+    b.set_defaults(func=cmd_backtest)
 
     c = sub.add_parser("calibrate", help="TRAIN/VAL calibration + lock config (no OOS)")
     c.add_argument("--symbol", default="EURUSD")
@@ -481,7 +502,11 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--config", default="config/strategy_v1.yaml")
     w.set_defaults(func=cmd_walk_forward)
 
-    p = sub.add_parser("paper_live", help="V9 paper trading mode (causal, LIVE SAFE)")
+    p = sub.add_parser(
+        "paper_live",
+        parents=[live_safe_parent],
+        help="V9 paper trading mode (causal, LIVE SAFE)",
+    )
     p.add_argument("--symbol", default="EURUSD")
     p.add_argument("--bars", type=int, default=3000)
     p.add_argument("--seed", type=int, default=42)
@@ -495,9 +520,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _normalize_argv(argv: list[str] | None) -> list[str] | None:
     """
-    Force subcommand-first order so flags like --symbols are attached to
-    the backtest subparser even if the user put them before the command.
-    Example:  --symbols EURUSD backtest  →  backtest --symbols EURUSD
+    Force subcommand-first order so flags like --live-safe / --symbols are
+    attached to the backtest subparser even if placed before the command.
+    Example:  --live-safe backtest  →  backtest --live-safe
     """
     raw = list(sys.argv[1:] if argv is None else argv)
     cmd_idx = next((i for i, a in enumerate(raw) if a in _COMMANDS), None)
@@ -507,9 +532,18 @@ def _normalize_argv(argv: list[str] | None) -> list[str] | None:
     return [cmd, *raw[:cmd_idx], *raw[cmd_idx + 1 :]]
 
 
+def _backtest_has_live_safe(parser: argparse.ArgumentParser) -> bool:
+    choices = parser._subparsers._group_actions[0].choices  # type: ignore[attr-defined]
+    bt = choices["backtest"]
+    return "--live-safe" in bt._option_string_actions
+
+
 def main(argv: list[str] | None = None) -> int:
     print("USING FILE:", __file__)
     parser = build_parser()
+    if not _backtest_has_live_safe(parser):
+        raise RuntimeError("--live-safe failed to register on backtest subparser")
+    print("V9 LIVE SAFE CLI READY")
     normalized = _normalize_argv(argv)
     args = parser.parse_args(normalized)
     # If --symbols was passed globally before subcommand, forward to backtest
@@ -517,10 +551,13 @@ def main(argv: list[str] | None = None) -> int:
         getattr(args, "command", None) == "backtest"
         and not str(getattr(args, "symbols", "") or "").strip()
     ):
-        # Root parser may have consumed symbols when placed before subcommand
         root_ns, _ = parser.parse_known_args(normalized)
         if str(getattr(root_ns, "symbols", "") or "").strip():
             args.symbols = root_ns.symbols
+    # Manual fallback: if argv contained --live-safe, force the attribute
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if "--live-safe" in raw:
+        args.live_safe = True
     print("ARGS:", vars(args))
     return int(args.func(args))
 
