@@ -340,6 +340,7 @@ def cmd_paper_live(args: argparse.Namespace) -> int:
                 "live_safe": live_safe,
                 "n_trades": len(result.trades),
                 "n_rejected": len(result.rejected),
+                "blocked_trades": result.rejected[:50],
                 "risk_summary": {
                     k: v
                     for k, v in result.risk_summary.items()

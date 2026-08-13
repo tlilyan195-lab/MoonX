@@ -132,6 +132,7 @@ def run_paper_live(
         if not filt.allowed or not risk_gate.allowed:
             reason = filt.decision_reason if not filt.allowed else risk_gate.reason
             reject = {
+                "event": "paper_blocked",
                 "symbol": decision.symbol,
                 "timestamp": str(ts),
                 "regime": decision.meta.get("regime"),
@@ -142,6 +143,7 @@ def run_paper_live(
                 "decision_reason": reason,
             }
             out.rejected.append(reject)
+            printer(reject)
             continue
 
         entry = float(decision.entry)
