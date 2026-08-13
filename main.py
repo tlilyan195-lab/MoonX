@@ -290,29 +290,28 @@ def cmd_paper_live(args: argparse.Namespace) -> int:
     print(f"PAPER LIVE: {symbol} capital={args.capital}")
     bundle = _bundle_from_synthetic(symbol, args.bars, args.seed)
 
-    # Optional: pre-fit regime expectancy from TRAIN split (no OOS peeking)
+    # Always fit TRAIN regime stats + symbol performance gate (no OOS peeking)
     by_regime: dict = {}
-    if args.use_train_regimes:
-        splits = run_split_backtests(
-            bundle, cfg, include_oos=False, live_safe=False, live_cfg=live_cfg
-        )
-        by_regime = splits["TRAIN"].metrics.by_regime
-        val = splits["VAL"]
-        filt = filter_symbol_performance(
-            symbol,
-            val.metrics.to_dict(),
-            (val.meta or {}).get("val_monte_carlo") or {},
-            cfg=live_cfg,
-            train_metrics=splits["TRAIN"].metrics.to_dict(),
-        )
-        print(
-            f"SYMBOL FILTER {symbol}: "
-            f"{'PASS' if filt.allowed else 'REJECT'} {filt.reasons or ''}"
-        )
-        if not filt.allowed:
-            print("❌ STRATEGY NOT LIVE READY")
-            print(json.dumps({"symbol_filter": filt.__dict__}, indent=2, default=str))
-            return 1
+    splits = run_split_backtests(
+        bundle, cfg, include_oos=False, live_safe=False, live_cfg=live_cfg
+    )
+    by_regime = splits["TRAIN"].metrics.by_regime
+    val = splits["VAL"]
+    filt = filter_symbol_performance(
+        symbol,
+        val.metrics.to_dict(),
+        (val.meta or {}).get("val_monte_carlo") or {},
+        cfg=live_cfg,
+        train_metrics=splits["TRAIN"].metrics.to_dict(),
+    )
+    print(
+        f"SYMBOL FILTER {symbol}: "
+        f"{'PASS' if filt.allowed else 'REJECT'} {filt.reasons or ''}"
+    )
+    if not filt.allowed:
+        print("❌ STRATEGY NOT LIVE READY")
+        print(json.dumps({"symbol_filter": filt.__dict__}, indent=2, default=str))
+        return 1
 
     result = run_paper_live(
         bundle,
@@ -490,12 +489,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--capital", type=float, default=100000.0)
     p.add_argument("--warmup", type=int, default=500)
-    p.add_argument(
-        "--use-train-regimes",
-        dest="use_train_regimes",
-        action="store_true",
-        help="Fit symbol filter + regime expectancy from TRAIN/VAL before paper run",
-    )
     p.add_argument("--config", default="config/strategy_v1.yaml")
     p.set_defaults(func=cmd_paper_live)
 
