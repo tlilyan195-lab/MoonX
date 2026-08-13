@@ -1,0 +1,73 @@
+# Secrets & credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*
+**/secrets/
+**/credentials/
+
+# API tokens / local auth
+*telegram*token*
+*discord*token*
+*.token
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Logs (may contain sensitive operational data)
+logs/
+*.log
+**/logs/
+
+# Generated locked configs (written by calibrate; do not commit secrets/trials)
+config/strategy_v1_locked.yaml
+config/*_locked.yaml
+
+# Local zip packaging
+MoonX.zip
+
+
+# Data caches / local dumps
+data/raw/
+data/cache/
+data/downloads/
+data/snapshots/
+*.parquet
+*.h5
+*.sqlite
+*.db
+!tests/fixtures/**/*.csv
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Docker / local overrides
+docker-compose.override.yml
+
+# Backtest artifacts
+artifacts/
+outputs/
+reports/
+**/tmp_results/

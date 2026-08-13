@@ -1,0 +1,537 @@
+{
+  "goal": "Validate signal frequency, distribution, basic performance sanity \u2014 not maximize win rate",
+  "data_snapshot_id": "sha256:dee051b2b8a16fa029c7cc1ad8a27a6e1b56db2281c2e84a17962b79b4095bd0",
+  "snapshot_dir": "data/snapshots/pilot_2025_10_d1d2",
+  "d2_provider": "jblanked_mql5_calendar",
+  "n_news_events_in_snapshot": 8,
+  "n_news_high": 1,
+  "constraints": {
+    "oos_run": false,
+    "hyperparameter_optimization": false,
+    "news_gate": "Impact High + Currency; scheduled Date UTC only",
+    "ignore_fields": [
+      "Actual",
+      "Outcome",
+      "Strength",
+      "Quality"
+    ]
+  },
+  "aggregate": {
+    "TRAIN_n_signals": 0,
+    "VAL_n_signals": 0
+  },
+  "period_utc": {
+    "start": "2025-10-01",
+    "end": "2025-10-31"
+  },
+  "sanity_finding": {
+    "fx_blocked_by": "data_quality:GAP",
+    "crypto_top_no_trade": [
+      "no_liquidity_sweep",
+      "htf_bias_misaligned",
+      "volatility_filter"
+    ],
+    "news_blackout_effect": "none_on_mapped_symbols_partial_seed_chf_high_only"
+  },
+  "symbols": [
+    {
+      "symbol": "EURUSD",
+      "asset_class": "FX",
+      "n_5m_bars": 6588,
+      "n_blackout_bars_total": 0,
+      "splits": {
+        "TRAIN": {
+          "start": "2025-10-01 00:05:00+00:00",
+          "end": "2025-10-20 17:20:00+00:00"
+        },
+        "VAL": {
+          "start": "2025-10-20 17:25:00+00:00",
+          "end": "2025-10-27 07:05:00+00:00"
+        },
+        "OOS_RESERVED_NOT_RUN": {
+          "start": "2025-10-27 07:10:00+00:00",
+          "end": "2025-10-31 21:00:00+00:00"
+        }
+      },
+      "frequency": {
+        "TRAIN": {
+          "signals": 0,
+          "signals_per_day": 0.0,
+          "split_days": 19.71875,
+          "blackout_bars_in_split": 0,
+          "n_eval_bars_meta": 3557
+        },
+        "VAL": {
+          "signals": 0,
+          "signals_per_day": 0.0,
+          "split_days": 6.569444444444445,
+          "blackout_bars_in_split": 0,
+          "n_eval_bars_meta": 1186
+        }
+      },
+      "TRAIN": {
+        "n_signals": 0,
+        "n_decisions_alertable": 0,
+        "category_dist": {},
+        "direction_dist": {},
+        "expectancy_R": null,
+        "profit_factor": 0.0,
+        "win_rate": null,
+        "max_drawdown_R": null,
+        "note": "win_rate reported for sanity only \u2014 not an optimization target"
+      },
+      "VAL": {
+        "n_signals": 0,
+        "n_decisions_alertable": 0,
+        "category_dist": {},
+        "direction_dist": {},
+        "expectancy_R": null,
+        "profit_factor": 0.0,
+        "win_rate": null,
+        "max_drawdown_R": null,
+        "note": "win_rate reported for sanity only \u2014 not an optimization target"
+      },
+      "no_trade_probe_TRAIN": {
+        "probe_step_bars": 12,
+        "n_probed": 330,
+        "decision_dist": {
+          "NO_TRADE": 330
+        },
+        "reason_dist_top": {
+          "data_quality:GAP": 330
+        }
+      },
+      "no_trade_probe_VAL": {
+        "probe_step_bars": 12,
+        "n_probed": 110,
+        "decision_dist": {
+          "NO_TRADE": 110
+        },
+        "reason_dist_top": {
+          "data_quality:GAP": 110
+        }
+      }
+    },
+    {
+      "symbol": "GBPUSD",
+      "asset_class": "FX",
+      "n_5m_bars": 6587,
+      "n_blackout_bars_total": 0,
+      "splits": {
+        "TRAIN": {
+          "start": "2025-10-01 00:05:00+00:00",
+          "end": "2025-10-20 17:20:00+00:00"
+        },
+        "VAL": {
+          "start": "2025-10-20 17:25:00+00:00",
+          "end": "2025-10-27 07:10:00+00:00"
+        },
+        "OOS_RESERVED_NOT_RUN": {
+          "start": "2025-10-27 07:15:00+00:00",
+          "end": "2025-10-31 21:00:00+00:00"
+        }
+      },
+      "frequency": {
+        "TRAIN": {
+          "signals": 0,
+          "signals_per_day": 0.0,
+          "split_days": 19.71875,
+          "blackout_bars_in_split": 0,
+          "n_eval_bars_meta": 3557
+        },
+        "VAL": {
+          "signals": 0,
+          "signals_per_day": 0.0,
+          "split_days": 6.572916666666667,
+          "blackout_bars_in_split": 0,
+          "n_eval_bars_meta": 1186
+        }
+      },
+      "TRAIN": {
+        "n_signals": 0,
+        "n_decisions_alertable": 0,
+        "category_dist": {},
+        "direction_dist": {},
+        "expectancy_R": null,
+        "profit_factor": 0.0,
+        "win_rate": null,
+        "max_drawdown_R": null,
+        "note": "win_rate reported for sanity only \u2014 not an optimization target"
+      },
+      "VAL": {
+        "n_signals": 0,
+        "n_decisions_alertable": 0,
+        "category_dist": {},
+        "direction_dist": {},
+        "expectancy_R": null,
+        "profit_factor": 0.0,
+        "win_rate": null,
+        "max_drawdown_R": null,
+        "note": "win_rate reported for sanity only \u2014 not an optimization target"
+      },
+      "no_trade_probe_TRAIN": {
+        "probe_step_bars": 12,
+        "n_probed": 330,
+        "decision_dist": {
+          "NO_TRADE": 330
+        },
+        "reason_dist_top": {
+          "data_quality:GAP": 330
+        }
+      },
+      "no_trade_probe_VAL": {
+        "probe_step_bars": 12,
+        "n_probed": 110,
+        "decision_dist": {
+          "NO_TRADE": 110
+        },
+        "reason_dist_top": {
+          "data_quality:GAP": 110
+        }
+      }
+    },
+    {
+      "symbol": "USDJPY",
+      "asset_class": "FX",
+      "n_5m_bars": 6588,
+      "n_blackout_bars_total": 0,
+      "splits": {
+        "TRAIN": {
+          "start": "2025-10-01 00:05:00+00:00",
+          "end": "2025-10-20 17:20:00+00:00"
+        },
+        "VAL": {
+          "start": "2025-10-20 17:25:00+00:00",
+          "end": "2025-10-27 07:05:00+00:00"
+        },
+        "OOS_RESERVED_NOT_RUN": {
+          "start": "2025-10-27 07:10:00+00:00",
+          "end": "2025-10-31 21:00:00+00:00"
+        }
+      },
+      "frequency": {
+        "TRAIN": {
+          "signals": 0,
+          "signals_per_day": 0.0,
+          "split_days": 19.71875,
+          "blackout_bars_in_split": 0,
+          "n_eval_bars_meta": 3557
+        },
+        "VAL": {
+          "signals": 0,
+          "signals_per_day": 0.0,
+          "split_days": 6.569444444444445,
+          "blackout_bars_in_split": 0,
+          "n_eval_bars_meta": 1186
+        }
+      },
+      "TRAIN": {
+        "n_signals": 0,
+        "n_decisions_alertable": 0,
+        "category_dist": {},
+        "direction_dist": {},
+        "expectancy_R": null,
+        "profit_factor": 0.0,
+        "win_rate": null,
+        "max_drawdown_R": null,
+        "note": "win_rate reported for sanity only \u2014 not an optimization target"
+      },
+      "VAL": {
+        "n_signals": 0,
+        "n_decisions_alertable": 0,
+        "category_dist": {},
+        "direction_dist": {},
+        "expectancy_R": null,
+        "profit_factor": 0.0,
+        "win_rate": null,
+        "max_drawdown_R": null,
+        "note": "win_rate reported for sanity only \u2014 not an optimization target"
+      },
+      "no_trade_probe_TRAIN": {
+        "probe_step_bars": 12,
+        "n_probed": 330,
+        "decision_dist": {
+          "NO_TRADE": 330
+        },
+        "reason_dist_top": {
+          "data_quality:GAP": 330
+        }
+      },
+      "no_trade_probe_VAL": {
+        "probe_step_bars": 12,
+        "n_probed": 110,
+        "decision_dist": {
+          "NO_TRADE": 110
+        },
+        "reason_dist_top": {
+          "data_quality:GAP": 110
+        }
+      }
+    },
+    {
+      "symbol": "XAUUSD",
+      "asset_class": "XAU",
+      "n_5m_bars": 6324,
+      "n_blackout_bars_total": 0,
+      "splits": {
+        "TRAIN": {
+          "start": "2025-10-01 00:05:00+00:00",
+          "end": "2025-10-20 17:10:00+00:00"
+        },
+        "VAL": {
+          "start": "2025-10-20 17:15:00+00:00",
+          "end": "2025-10-27 07:30:00+00:00"
+        },
+        "OOS_RESERVED_NOT_RUN": {
+          "start": "2025-10-27 07:35:00+00:00",
+          "end": "2025-10-31 21:00:00+00:00"
+        }
+      },
+      "frequency": {
+        "TRAIN": {
+          "signals": 0,
+          "signals_per_day": 0.0,
+          "split_days": 19.711805555555557,
+          "blackout_bars_in_split": 0,
+          "n_eval_bars_meta": 3415
+        },
+        "VAL": {
+          "signals": 0,
+          "signals_per_day": 0.0,
+          "split_days": 6.59375,
+          "blackout_bars_in_split": 0,
+          "n_eval_bars_meta": 1138
+        }
+      },
+      "TRAIN": {
+        "n_signals": 0,
+        "n_decisions_alertable": 0,
+        "category_dist": {},
+        "direction_dist": {},
+        "expectancy_R": null,
+        "profit_factor": 0.0,
+        "win_rate": null,
+        "max_drawdown_R": null,
+        "note": "win_rate reported for sanity only \u2014 not an optimization target"
+      },
+      "VAL": {
+        "n_signals": 0,
+        "n_decisions_alertable": 0,
+        "category_dist": {},
+        "direction_dist": {},
+        "expectancy_R": null,
+        "profit_factor": 0.0,
+        "win_rate": null,
+        "max_drawdown_R": null,
+        "note": "win_rate reported for sanity only \u2014 not an optimization target"
+      },
+      "no_trade_probe_TRAIN": {
+        "probe_step_bars": 12,
+        "n_probed": 317,
+        "decision_dist": {
+          "NO_TRADE": 317
+        },
+        "reason_dist_top": {
+          "data_quality:GAP": 317
+        }
+      },
+      "no_trade_probe_VAL": {
+        "probe_step_bars": 12,
+        "n_probed": 106,
+        "decision_dist": {
+          "NO_TRADE": 106
+        },
+        "reason_dist_top": {
+          "data_quality:GAP": 106
+        }
+      }
+    },
+    {
+      "symbol": "BTCUSDT",
+      "asset_class": "CRYPTO",
+      "n_5m_bars": 8927,
+      "n_blackout_bars_total": 0,
+      "splits": {
+        "TRAIN": {
+          "start": "2025-10-01 00:05:00+00:00",
+          "end": "2025-10-19 14:20:00+00:00"
+        },
+        "VAL": {
+          "start": "2025-10-19 14:25:00+00:00",
+          "end": "2025-10-25 19:05:00+00:00"
+        },
+        "OOS_RESERVED_NOT_RUN": {
+          "start": "2025-10-25 19:10:00+00:00",
+          "end": "2025-10-31 23:55:00+00:00"
+        }
+      },
+      "frequency": {
+        "TRAIN": {
+          "signals": 0,
+          "signals_per_day": 0.0,
+          "split_days": 18.59375,
+          "blackout_bars_in_split": 0,
+          "n_eval_bars_meta": 4856
+        },
+        "VAL": {
+          "signals": 0,
+          "signals_per_day": 0.0,
+          "split_days": 6.194444444444445,
+          "blackout_bars_in_split": 0,
+          "n_eval_bars_meta": 1607
+        }
+      },
+      "TRAIN": {
+        "n_signals": 0,
+        "n_decisions_alertable": 0,
+        "category_dist": {},
+        "direction_dist": {},
+        "expectancy_R": null,
+        "profit_factor": 0.0,
+        "win_rate": null,
+        "max_drawdown_R": null,
+        "note": "win_rate reported for sanity only \u2014 not an optimization target"
+      },
+      "VAL": {
+        "n_signals": 0,
+        "n_decisions_alertable": 0,
+        "category_dist": {},
+        "direction_dist": {},
+        "expectancy_R": null,
+        "profit_factor": 0.0,
+        "win_rate": null,
+        "max_drawdown_R": null,
+        "note": "win_rate reported for sanity only \u2014 not an optimization target"
+      },
+      "no_trade_probe_TRAIN": {
+        "probe_step_bars": 12,
+        "n_probed": 447,
+        "decision_dist": {
+          "NO_TRADE": 447
+        },
+        "reason_dist_top": {
+          "no_liquidity_sweep": 203,
+          "htf_bias_misaligned": 171,
+          "volatility_filter": 31,
+          "missing_bos_1h": 13,
+          "sweep_entry_distance": 8,
+          "not_in_premium": 8,
+          "no_valid_poi": 5,
+          "insufficient_bars": 4,
+          "no_5m_confirmation": 3,
+          "score_below_B": 1
+        }
+      },
+      "no_trade_probe_VAL": {
+        "probe_step_bars": 12,
+        "n_probed": 149,
+        "decision_dist": {
+          "NO_TRADE": 149
+        },
+        "reason_dist_top": {
+          "htf_bias_misaligned": 47,
+          "no_liquidity_sweep": 44,
+          "not_in_discount": 21,
+          "no_valid_poi": 20,
+          "no_5m_confirmation": 8,
+          "missing_bos_1h": 6,
+          "sweep_entry_distance": 3
+        }
+      }
+    },
+    {
+      "symbol": "ETHUSDT",
+      "asset_class": "CRYPTO",
+      "n_5m_bars": 8927,
+      "n_blackout_bars_total": 0,
+      "splits": {
+        "TRAIN": {
+          "start": "2025-10-01 00:05:00+00:00",
+          "end": "2025-10-19 14:20:00+00:00"
+        },
+        "VAL": {
+          "start": "2025-10-19 14:25:00+00:00",
+          "end": "2025-10-25 19:05:00+00:00"
+        },
+        "OOS_RESERVED_NOT_RUN": {
+          "start": "2025-10-25 19:10:00+00:00",
+          "end": "2025-10-31 23:55:00+00:00"
+        }
+      },
+      "frequency": {
+        "TRAIN": {
+          "signals": 0,
+          "signals_per_day": 0.0,
+          "split_days": 18.59375,
+          "blackout_bars_in_split": 0,
+          "n_eval_bars_meta": 4856
+        },
+        "VAL": {
+          "signals": 0,
+          "signals_per_day": 0.0,
+          "split_days": 6.194444444444445,
+          "blackout_bars_in_split": 0,
+          "n_eval_bars_meta": 1607
+        }
+      },
+      "TRAIN": {
+        "n_signals": 0,
+        "n_decisions_alertable": 0,
+        "category_dist": {},
+        "direction_dist": {},
+        "expectancy_R": null,
+        "profit_factor": 0.0,
+        "win_rate": null,
+        "max_drawdown_R": null,
+        "note": "win_rate reported for sanity only \u2014 not an optimization target"
+      },
+      "VAL": {
+        "n_signals": 0,
+        "n_decisions_alertable": 0,
+        "category_dist": {},
+        "direction_dist": {},
+        "expectancy_R": null,
+        "profit_factor": 0.0,
+        "win_rate": null,
+        "max_drawdown_R": null,
+        "note": "win_rate reported for sanity only \u2014 not an optimization target"
+      },
+      "no_trade_probe_TRAIN": {
+        "probe_step_bars": 12,
+        "n_probed": 447,
+        "decision_dist": {
+          "NO_TRADE": 447
+        },
+        "reason_dist_top": {
+          "htf_bias_misaligned": 201,
+          "no_liquidity_sweep": 166,
+          "volatility_filter": 29,
+          "missing_bos_1h": 26,
+          "sweep_entry_distance": 6,
+          "no_5m_confirmation": 5,
+          "no_valid_poi": 5,
+          "insufficient_bars": 4,
+          "not_in_premium": 4,
+          "no_liquidity_tp_or_rr": 1
+        }
+      },
+      "no_trade_probe_VAL": {
+        "probe_step_bars": 12,
+        "n_probed": 149,
+        "decision_dist": {
+          "NO_TRADE": 149
+        },
+        "reason_dist_top": {
+          "htf_bias_misaligned": 72,
+          "no_liquidity_sweep": 35,
+          "not_in_premium": 15,
+          "missing_bos_1h": 12,
+          "no_valid_poi": 8,
+          "sweep_entry_distance": 4,
+          "no_5m_confirmation": 2,
+          "no_liquidity_tp_or_rr": 1
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "data_snapshot_id": "sha256:dee051b2b8a16fa029c7cc1ad8a27a6e1b56db2281c2e84a17962b79b4095bd0",
+  "manifest_path": "data/snapshots/pilot_2025_10_d1d2/manifest.json",
+  "snapshot_dir": "data/snapshots/pilot_2025_10_d1d2",
+  "period_utc": {
+    "start": "2025-10-01 00:00:00+00:00",
+    "end": "2025-10-31 23:59:59+00:00"
+  },
+  "rejected_symbols": [],
+  "all_hashes_ok": true,
+  "news_d2": {
+    "provider": "jblanked_mql5_calendar",
+    "provider_locked_d2": true,
+    "timezone": "UTC",
+    "gate": "impact_high_plus_currency",
+    "scheduled_date_only": true,
+    "ignore_fields": [
+      "Actual",
+      "Outcome",
+      "Strength",
+      "Quality"
+    ],
+    "missing_event_policy": "no_event_no_synthetic_fill",
+    "source": "cache_parquet",
+    "cache_path": "data/cache/jblanked/events_pilot.parquet",
+    "n_events": 8,
+    "n_high": 1
+  },
+  "providers": {
+    "D1_FX": "dukascopy_historical_ticks",
+    "D1_XAU": "dukascopy_historical_ticks",
+    "D1_CRYPTO": "binance_usdm_futures_public",
+    "D2_NEWS": "jblanked_mql5_calendar",
+    "D2_LOCKED": true,
+    "D2_RULES": {
+      "timezone": "UTC",
+      "scheduled_date_only": true,
+      "gate": "Impact High + Currency",
+      "ignore": [
+        "Actual",
+        "Outcome",
+        "Strength",
+        "Quality"
+      ],
+      "missing_event_id": "fingerprint(Name|Date|Currency)",
+      "missing_events": "no_event"
+    }
+  }
+}

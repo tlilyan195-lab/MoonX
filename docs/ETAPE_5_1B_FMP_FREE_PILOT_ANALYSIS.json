@@ -1,0 +1,31 @@
+{
+  "analyzed_at_utc": "2026-08-09T21:28:47Z",
+  "sample_generated_at_utc": "2026-08-06T09:59:27Z",
+  "key_present": true,
+  "key_fingerprint": "m4jo…9U4L (len=32)",
+  "FMP_FREE_PILOT": "FAIL_ENTITLEMENT_402",
+  "PROVIDER_STATUS": "BLOCKED_ENTITLEMENT",
+  "3Y_HISTORY": "NOT_CONFIRMED",
+  "LOOKAHEAD_SAFETY": "UNKNOWN",
+  "PAYMENT_RECOMMENDATION": "NO_AUTO",
+  "http_statuses": [
+    402,
+    402,
+    402
+  ],
+  "all_windows_402": true,
+  "payment_required_all": true,
+  "n_events_total": 0,
+  "error_class": "restricted_endpoint_subscription",
+  "error_sample": "Restricted Endpoint: This endpoint is not available under your current subscription please visit our subscription page to upgrade your plan at https://financialmodelingprep.com/",
+  "schema_events_received": false,
+  "why": "Live Free key authenticated (not 401) but /stable/economic-calendar is Restricted Endpoint (HTTP 402) on all pilot windows. Zero events. Do not auto-pay Starter. Classify BLOCKED_ENTITLEMENT / non validé Free. Continue ÉTAPE 5.1 with next no-pay alternative (JBlanked).",
+  "next_no_pay_provider": "jblanked",
+  "constraints": {
+    "no_strategy_rule_changes": true,
+    "no_oos": true,
+    "no_real_orders": true,
+    "no_definitive_connector": true,
+    "quantgist_status": "BLOCKED_AUTH"
+  }
+}
