@@ -425,12 +425,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="(global) Comma-separated symbols; prefer: backtest --symbols ...",
     )
-    parser.add_argument(
-        "--live-safe",
-        dest="live_safe",
-        action="store_true",
-        help="(global) Enable V9 LIVE SAFE; prefer: backtest --live-safe",
-    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     # backtest — home for --symbols, --include-oos, --live-safe
@@ -460,14 +454,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print compact per-symbol summary (n_signals / expectancy / winrate)",
     )
-    b.add_argument(
-        "--live-safe",
-        dest="live_safe",
-        action="store_true",
-        help="Enable V9 LIVE SAFE post-strategy filters + risk gates",
-    )
+    # V9 LIVE SAFE — MUST be on backtest subparser (not only global)
+    b.add_argument("--live-safe", action="store_true", help="Enable V9 safety layer")
     b.add_argument("--config", default="config/strategy_v1.yaml")
-    b.set_defaults(func=cmd_backtest)
+    b.set_defaults(func=cmd_backtest, live_safe=False)
 
     c = sub.add_parser("calibrate", help="TRAIN/VAL calibration + lock config (no OOS)")
     c.add_argument("--symbol", default="EURUSD")
@@ -531,13 +521,6 @@ def main(argv: list[str] | None = None) -> int:
         root_ns, _ = parser.parse_known_args(normalized)
         if str(getattr(root_ns, "symbols", "") or "").strip():
             args.symbols = root_ns.symbols
-    # Forward global --live-safe onto backtest if subparser missed it
-    if getattr(args, "command", None) == "backtest" and not bool(
-        getattr(args, "live_safe", False)
-    ):
-        root_ns, _ = parser.parse_known_args(normalized)
-        if bool(getattr(root_ns, "live_safe", False)):
-            args.live_safe = True
     print("ARGS:", vars(args))
     return int(args.func(args))
 
